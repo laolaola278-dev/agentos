@@ -477,25 +477,43 @@ Rules:
 const MAX_COMPACTION_MESSAGES = 100;
 const KEEP_AFTER_COMPACTION = 30;
 
-/** Reads project-level instructions (AGENTS.md / CLAUDE.md / AGENTOS.md) from the workspace, capped. */
+/** Reads project-level instructions hierarchically (Claude Code / Codex convention):
+ *  starting at the workdir and walking UP to the filesystem root, collecting
+ *  AGENTS.md / CLAUDE.md / AGENTOS.md per level - nearest directory wins, higher
+ *  files are appended as parent context. Total content is capped. */
 export async function readProjectInstructions(workdir: string, cap = 8000): Promise<string | null> {
-  for (const name of ["AGENTS.md", "CLAUDE.md", "AGENTOS.md"]) {
-    try {
-      const content = await fsp.readFile(path.join(workdir, name), "utf8");
-      const trimmed = content.trim();
-      if (trimmed) return trimmed.length > cap ? `${trimmed.slice(0, cap)}…[truncated]` : trimmed;
-    } catch {
-      // try the next convention
+  const NAMES = ["AGENTS.md", "CLAUDE.md", "AGENTOS.md"];
+  const sections: { dir: string; name: string; text: string }[] = [];
+  let dir = path.resolve(workdir);
+  for (let depth = 0; depth < 12; depth++) {
+    for (const name of NAMES) {
+      try {
+        const text = (await fsp.readFile(path.join(dir, name), "utf8")).trim();
+        if (text) sections.push({ dir, name, text: text.length > Math.floor(cap / 2) ? `${text.slice(0, Math.floor(cap / 2))}...[truncated]` : text });
+      } catch {
+        // try the next convention
+      }
     }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
-  return null;
+  if (!sections.length) return null;
+  const parts: string[] = [];
+  let total = 0;
+  for (const s of sections) {
+    const header = s.dir === path.resolve(workdir) ? `Project instructions (${s.name}):` : `Instructions from ${s.name} in a parent directory (${s.dir}):`;
+    const part = `${header}${"\n"}${s.text}`;
+    if (total + part.length > cap) {
+      parts.push("...[instructions truncated]");
+      break;
+    }
+    parts.push(part);
+    total += part.length + 2;
+  }
+  return parts.join("\n\n");
 }
 
-/**
- * Keeps the model conversation bounded: when it grows past `max`, older turns are
- * replaced by an LLM summary (or a deterministic marker without a model), always
- * preserving the system message and whole assistant/tool pairs.
- */
 export async function compactConversation(messages: Message[], model?: { complete: ModelProvider["complete"] } | null, signal?: AbortSignal): Promise<{ messages: Message[]; compacted: boolean; summary?: string }> {
   if (messages.length <= MAX_COMPACTION_MESSAGES) return { messages, compacted: false };
   const system = messages.filter((m) => m.role === "system");

@@ -221,6 +221,13 @@ export class Orchestrator {
           case "PLANNING": {
             if (task.spec.mode === "agentic") {
               if (!this.model?.completeWithTools) throw new AgentOSError("MODEL_REQUIRED", "mode=agentic requires a model provider with native tool calling (set LLM_API_KEY)");
+              // skills hot-reload: long-running runtimes pick up new/edited skills per task
+              try {
+                const { loadSkills } = await import("./skills");
+                this.skills = (await loadSkills(path.join(this.deps.dataDir, "skills"))).skills;
+              } catch {
+                // keep the previously loaded set
+              }
               // the researcher's report seeds the agentic conversation with workspace context
               research = (await runAgent(researcher, ctx(), undefined)).output;
               cp.plan = { steps: [], rationale: "agentic mode: the model drives tool calls directly; verification and review still gate completion", source: "model" };

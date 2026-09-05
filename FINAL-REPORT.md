@@ -150,3 +150,26 @@ An independent audit confirmed the Round-4 claims and flagged five gaps; all clo
    plus AGENTS.md project instructions and automatic context compaction.
 
 Final verification: `TEST_DATABASE_URL=... npm run test:all` → 101/101 · lint clean · typecheck clean · `next build` OK.
+
+---
+
+# ADDENDUM — Phases 8–14: platform completion (harness upgrade → CLI-gap closure)
+
+Following the Phase 7 report, the platform went through seven more rounds, each audited:
+
+| Phase | Delivered |
+|---|---|
+| 8 | Harness upgrade: native tool-calling model layer, agentic mode, hooks, MCP (stdio), maxTokensField quirk groundwork |
+| 9 | Streaming end-to-end (transient `model.delta`), permission gate, `agentos chat` REPL, AGENTS.md + compaction, real-PG regression tier |
+| 10 | Audit remediation: REPL test coverage, EOF-hang fix, injection lock, doc drift |
+| 11 | Sandbox tiers (none/process/container), encrypted secrets vault, provider profiles (GitHub Models/DeepSeek/GLM/Ollama/custom) + quirk adaptation |
+| 12 | Capability uplift: baseline fix (transient checkpoint-save tolerance), maxTokensField auto-flip, E1 context engineering, E5 skills with injection scan, scoped API keys, E3 deterministic eval loop |
+| 13 | CLI-gap closure vs Claude Code/Codex/Aider/MCP (each item compared against the corresponding docs): parallel tool calls, subagents, repo-map, permission policy table, sandbox read-only rootfs, chat sessions + slash registry, eval presets, MCP Streamable HTTP |
+| 14 | Remaining deficiencies: subagent tool allowlists, permission `ask` tier (deny > ask > allow, fail-closed headless), transcript-level session resume (TaskSpec.context), MCP 404 re-initialize + DELETE termination |
+
+Post-completion polish (this addendum): hierarchical AGENTS.md (nearest-directory wins, parent chain appended),
+skills hot-reload per agentic task, dashboard scoped-API-key support + workdir form field, BENCHMARK.md regenerated.
+
+Final verification: 160 tests (unit 98 / integration 42 / e2e 2 / recovery 5 / chaos 5 / stress 4) — 159 passed,
+1 gated-skip (container tier needs a Docker daemon); lint, typecheck, `next build` clean; benchmark regenerated.
+Environment-gated leftovers: real-LLM smoke (needs a key); kernel-level sandbox (needs native bindings).

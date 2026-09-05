@@ -36,8 +36,17 @@ export function fmtMs(ms: number | undefined | null) {
   return `${(ms / 60_000).toFixed(1)}m`;
 }
 
+/** Attach the scoped API key (when the user stored one) to every dashboard call. */
+export function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const key = typeof window === "undefined" ? "" : window.localStorage.getItem("agentos-api-key") ?? "";
+  const headers = new Headers(init.headers);
+  headers.set("content-type", "application/json");
+  if (key) headers.set("authorization", `Bearer ${key}`);
+  return fetch(input, { ...init, headers });
+}
+
 export async function taskAction(id: string, action: string) {
-  const res = await fetch(`/api/agentos/tasks/${id}/action`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) });
+  const res = await apiFetch(`/api/agentos/tasks/${id}/action`, { method: "POST", body: JSON.stringify({ action }) });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error ?? res.statusText);
@@ -65,12 +74,13 @@ export default function Dashboard() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("");
-  const [form, setForm] = useState({ title: "", goal: EXAMPLE_GOAL, priority: 0, maxRetries: 2, isolated: false });
+  const [form, setForm] = useState({ title: "", goal: EXAMPLE_GOAL, priority: 0, maxRetries: 2, isolated: false, workdir: "" });
+  const [apiKeyValue, setApiKeyValue] = useState("");
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      const [t, m] = await Promise.all([fetch("/api/agentos/tasks").then((r) => r.json()), fetch("/api/agentos/metrics").then((r) => r.json())]);
+      const [t, m] = await Promise.all([apiFetch("/api/agentos/tasks").then((r) => r.json()), apiFetch("/api/agentos/metrics").then((r) => r.json())]);
       if (t.error) throw new Error(t.error);
       setTasks(t.tasks);
       setMetrics(m);
@@ -96,10 +106,9 @@ export default function Dashboard() {
     e.preventDefault();
     setBusy(true);
     try {
-      const res = await fetch("/api/agentos/tasks", {
+      const res = await apiFetch("/api/agentos/tasks", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title: form.title || form.goal.split("\n").find((l) => l && !l.startsWith("#"))?.slice(0, 60) || "untitled", goal: form.goal, priority: Number(form.priority), budget: { maxRetries: Number(form.maxRetries) }, isolated: form.isolated, start: true }),
+        body: JSON.stringify({ title: form.title || form.goal.split("\n").find((l) => l && !l.startsWith("#"))?.slice(0, 60) || "untitled", goal: form.goal, priority: Number(form.priority), budget: { maxRetries: Number(form.maxRetries) }, isolated: form.isolated, ...(form.workdir.trim() ? { workdir: form.workdir.trim() } : {}), start: true }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error);
@@ -131,7 +140,20 @@ export default function Dashboard() {
           <h1 className="text-3xl font-bold text-slate-900">AgentOS</h1>
           <p className="text-sm text-slate-600">Local autonomous agent runtime — tasks, agents, tools, events, verification.</p>
         </div>
-        <nav className="flex gap-3 text-sm">
+        <nav className="flex flex-wrap items-center gap-3 text-sm">
+          <input
+            type="password"
+            placeholder="API key (scoped; stored in this browser only)"
+            className="w-64 rounded-lg border border-slate-300 px-3 py-1.5"
+            value={apiKeyValue}
+            onChange={(e) => {
+              setApiKeyValue(e.target.value);
+              if (typeof window !== "undefined") {
+                if (e.target.value) window.localStorage.setItem("agentos-api-key", e.target.value);
+                else window.localStorage.removeItem("agentos-api-key");
+              }
+            }}
+          />
           <a className="rounded-lg bg-white px-3 py-1.5 ring-1 ring-slate-200 hover:bg-slate-50" href="/api/agentos/metrics?format=prometheus" target="_blank">
             Prometheus
           </a>
@@ -178,6 +200,7 @@ export default function Dashboard() {
                 <input type="checkbox" checked={form.isolated} onChange={(e) => setForm({ ...form, isolated: e.target.checked })} /> git worktree
               </label>
             </div>
+            <input className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs" placeholder="Workdir (optional, relative to runtime root)" value={form.workdir} onChange={(e) => setForm({ ...form, workdir: e.target.value })} />
             <button disabled={busy} className="w-full rounded-lg bg-slate-900 px-3 py-2 font-semibold text-white hover:bg-slate-700 disabled:opacity-50">
               {busy ? "Creating…" : "Create & run"}
             </button>

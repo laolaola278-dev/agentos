@@ -46,3 +46,32 @@ test("repo-map respects the character budget and flags truncation", async () => 
     await fsp.rm(dir, { recursive: true, force: true });
   }
 });
+
+test("readProjectInstructions walks parent directories, nearest first", async () => {
+  const { readProjectInstructions } = await import("@/agentos/agents");
+  const dir = await tmpDir("agentos-hier-");
+  try {
+    await fsp.mkdir(path.join(dir, "packages", "app"), { recursive: true });
+    await fsp.writeFile(path.join(dir, "AGENTS.md"), "# Root rules\n- use pnpm at the root");
+    await fsp.writeFile(path.join(dir, "packages", "app", "AGENTS.md"), "# App rules\n- app deploys first");
+    const text = (await readProjectInstructions(path.join(dir, "packages", "app"))) ?? "";
+    // nearest directory wins (appears first), parent appended as context
+    const appIdx = text.indexOf("App rules");
+    const rootIdx = text.indexOf("Root rules");
+    assert.ok(appIdx >= 0 && rootIdx >= 0, `both sections present: ${text}`);
+    assert.ok(appIdx < rootIdx, "nearest directory takes precedence");
+    assert.match(text, /parent directory/, "parent section labelled");
+    // walking up from a subdirectory still finds the root AGENTS.md
+    const fromSub = (await readProjectInstructions(path.join(dir, "packages"))) ?? "";
+    assert.match(fromSub, /Root rules/);
+    // a fresh tree with no instructions anywhere up the chain → null
+    const empty = await tmpDir("agentos-hier-empty-");
+    try {
+      assert.equal(await readProjectInstructions(empty), null);
+    } finally {
+      await fsp.rm(empty, { recursive: true, force: true });
+    }
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+});
