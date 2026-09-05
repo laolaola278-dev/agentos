@@ -15,6 +15,8 @@ import type {
   StepResult,
   StepSpec,
   Task,
+  ToolOutput,
+  ToolSchema,
   VerificationResult,
   VerificationSpec,
 } from "./types";
@@ -371,6 +373,182 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Agentic loop — the model drives the tool registry directly (Claude Code /
+// Codex style). The harness stays in charge of budgets, checkpoints, the
+// verification engine and the independent reviewer, so an agentic task can
+// still only complete with objective evidence.
+// ---------------------------------------------------------------------------
+
+/** Builds OpenAI function-calling schemas from the registry: one tool per `tool.action`. */
+export function toolSchemasFromRegistry(registry: ToolRegistry): { schemas: ToolSchema[]; resolve: (name: string) => { tool: string; action: string } | null } {
+  const schemas: ToolSchema[] = [];
+  const index = new Map<string, { tool: string; action: string }>();
+  for (const t of registry.list()) {
+    for (const a of t.actions) {
+      const name = `${t.name}__${a.name}`;
+      const properties: Record<string, unknown> = {};
+      const required: string[] = [];
+      for (const [param, descriptor] of Object.entries(a.params)) {
+        const optional = descriptor.endsWith("?");
+        const base = optional ? descriptor.slice(0, -1) : descriptor;
+        let schema: Record<string, unknown>;
+        if (base === "number") schema = { type: "number" };
+        else if (base === "boolean") schema = { type: "boolean" };
+        else if (base === "object") schema = { type: "object" };
+        else if (base === "string[]") schema = { type: "array", items: { type: "string" } };
+        else if (base === "any") schema = {};
+        else if (base.includes("|")) schema = { type: "string", enum: base.split("|") };
+        else schema = { type: "string" };
+        properties[param] = schema;
+        if (!optional) required.push(param);
+      }
+      schemas.push({ name, description: `${t.name} tool, action "${a.name}": ${a.description}`, parameters: { type: "object", properties, required } });
+      index.set(name, { tool: t.name, action: a.name });
+    }
+  }
+  return { schemas, resolve: (name) => index.get(name) ?? null };
+}
+
+function summariseForModel(output: ToolOutput, maxChars = 4000): string {
+  const payload = { ok: output.ok, data: output.data, error: output.error, truncated: output.truncated };
+  let json = JSON.stringify(payload) ?? "{}";
+  if (json.length > maxChars) json = json.slice(0, maxChars) + `…[truncated, ${json.length} chars total]`;
+  return json;
+}
+
+/** Drops oldest whole tool-call turns, always keeping the system message and result/assistant pairing intact. */
+export function trimConversation(messages: Message[], max = 60): Message[] {
+  if (messages.length <= max) return messages;
+  const system = messages.filter((m) => m.role === "system");
+  const rest = messages.filter((m) => m.role !== "system");
+  const keep = Math.max(4, max - system.length);
+  let start = 0;
+  let units = rest.length;
+  while (units > keep && start < rest.length) {
+    const m = rest[start];
+    start++;
+    units--;
+    if (m.role === "assistant" && m.toolCalls?.length) {
+      const ids = new Set(m.toolCalls.map((c) => c.id));
+      while (start < rest.length && rest[start].role === "tool" && ids.has(rest[start].toolCallId ?? "")) {
+        start++;
+        units--;
+      }
+    }
+  }
+  return [...system, ...rest.slice(start)];
+}
+
+export const AGENTIC_SYSTEM = `You are an autonomous software-engineering agent working inside a sandboxed workspace on the user's machine.
+Achieve the goal by calling tools yourself, one step at a time, observing each result before deciding the next action.
+Rules:
+- Stay inside the workspace; paths are relative to it.
+- Prefer small, verifiable steps (write files, run commands) over big speculative ones.
+- Re-read files you did not write before editing them.
+- When you believe the goal is met, respond with a short summary and NO tool call. The harness will still run independent verification and review.`;
+
+export interface AgenticInput {
+  /** Called after each executed tool call so the orchestrator can checkpoint. */
+  onTurn: (result: StepResult) => Promise<void>;
+}
+
+export interface AgenticOutput {
+  finalMessage: string;
+  turns: number;
+  toolCalls: number;
+  results: StepResult[];
+}
+
+export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
+  role: AgentRole = "executor";
+
+  async run(ctx: AgentContext, input: AgenticInput): Promise<AgenticOutput> {
+    if (!ctx.model?.completeWithTools) throw new AgentOSError("MODEL_REQUIRED", "mode=agentic requires a model provider with native tool calling (set LLM_API_KEY)");
+    const { schemas, resolve } = toolSchemasFromRegistry(ctx.tools);
+    if (schemas.length === 0) throw new AgentOSError("NO_TOOLS", "agentic mode requires at least one registered tool");
+    const goal = ctx.task.spec.goal?.trim() || ctx.task.spec.title;
+    const conversation: Message[] = [
+      {
+        role: "system",
+        content: `${AGENTIC_SYSTEM}\n\nWorkspace: ${ctx.workdir}\nGoal: ${goal}`,
+        ts: nowIso(),
+      },
+    ];
+    // recovery: replay earlier observations so a resumed task keeps its context
+    for (const m of ctx.checkpoint.messages.slice(-8)) {
+      if (m.role === "system") continue;
+      if (m.toolCalls?.length) continue;
+      conversation.push(m.role === "tool" ? { role: "user", content: `[previous run observation] ${m.content.slice(0, 2000)}`, ts: m.ts } : { role: m.role, content: m.content.slice(0, 4000), ts: m.ts });
+    }
+    const results: StepResult[] = [];
+    let turns = 0;
+    let toolCalls = 0;
+    let finalMessage = "";
+
+    for (;;) {
+      if (ctx.signal.aborted) throw ctx.signal.reason;
+      turns++;
+      const completion = await ctx.model.completeWithTools(trimConversation(conversation), schemas, { signal: ctx.signal, maxTokens: 8192 });
+      ctx.budget.consumeTokens(completion.tokens);
+      await ctx.bus.emit({ taskId: ctx.task.id, agentId: "executor", type: "model.completed", data: { agent: "executor", tokens: completion.tokens, provider: ctx.model.name, turn: turns, toolCalls: completion.toolCalls.length } });
+      if (!completion.toolCalls.length) {
+        finalMessage = completion.content.trim();
+        pushMessage(ctx, "assistant", `agentic final (turn ${turns}): ${finalMessage.slice(0, 2000)}`, "executor");
+        break;
+      }
+      conversation.push({ role: "assistant", content: completion.content, toolCalls: completion.toolCalls, ts: nowIso() });
+      for (const call of completion.toolCalls) {
+        if (ctx.signal.aborted) throw ctx.signal.reason;
+        const started = Date.now();
+        const target = resolve(call.name);
+        let args: Record<string, unknown> = {};
+        let parseError: string | undefined;
+        try {
+          args = call.arguments.trim() ? (JSON.parse(call.arguments) as Record<string, unknown>) : {};
+        } catch (err) {
+          parseError = `invalid JSON arguments: ${err instanceof Error ? err.message : String(err)}`;
+        }
+        let result: StepResult;
+        if (!target || parseError) {
+          const message = !target ? `unknown tool "${call.name}"` : parseError!;
+          await ctx.bus.emit({ taskId: ctx.task.id, agentId: "executor", type: "agent.tool_call", tool: call.name, args: { turn: turns, invalid: true }, error: message });
+          result = { stepId: `t${turns}-${call.id}`, tool: call.name, action: "", ok: false, error: message, durationMs: Date.now() - started, attempt: 1, finishedAt: nowIso() };
+        } else {
+          ctx.budget.consumeToolCall();
+          toolCalls++;
+          await ctx.bus.emit({ taskId: ctx.task.id, agentId: "executor", type: "agent.tool_call", tool: target.tool, args: { stepId: result_stepId(turns, call.id), action: target.action, turn: turns, arguments: args }, data: { source: "agentic" } });
+          const output = await ctx.tools.execute(
+            target.tool,
+            { action: target.action, args },
+            { taskId: ctx.task.id, agentId: "executor", workdir: ctx.workdir, signal: ctx.signal, timeoutMs: Math.min(ctx.budget.remainingMs() || 1, 10 * 60_000), bus: ctx.bus, shell: ctx.shell },
+          );
+          result = {
+            stepId: result_stepId(turns, call.id),
+            tool: target.tool,
+            action: target.action,
+            ok: output.ok,
+            output,
+            error: output.ok ? undefined : `${output.error?.code}: ${output.error?.message}`,
+            durationMs: Date.now() - started,
+            attempt: 1,
+            finishedAt: nowIso(),
+          };
+        }
+        results.push(result);
+        conversation.push({ role: "tool", toolCallId: call.id, name: call.name, content: result.ok ? summariseForModel(result.output!) : `ERROR: ${result.error}`, ts: nowIso() });
+        pushMessage(ctx, "tool", `${result.stepId} ${result.tool}.${result.action} -> ${result.ok ? "ok" : `FAILED ${result.error}`}`, "executor");
+        await input.onTurn(result);
+      }
+    }
+    return { finalMessage, turns, toolCalls, results };
+  }
+}
+
+function result_stepId(turn: number, callId: string): string {
+  return `t${turn}-${callId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 24)}`;
+}
+
+// ---------------------------------------------------------------------------
 // Tester
 // ---------------------------------------------------------------------------
 
@@ -541,7 +719,7 @@ export type Failure =
   | { kind: "error"; error: unknown };
 
 const TRANSIENT_CODES = new Set(["TIMEOUT", "BUSY", "NETWORK_ERROR", "EAGAIN", "EBUSY", "ETIMEDOUT", "ECONNRESET", "TOO_MANY_PROCESSES", "MODEL_ERROR", "MODEL_HTTP_ERROR"]);
-const FATAL_CODES = new Set(["BUDGET_EXCEEDED", "DANGEROUS_COMMAND", "PATH_TRAVERSAL", "BLOCKED_HOST", "PLAN_INVALID", "PLAN_UNAVAILABLE", "PLAN_EMPTY", "UNKNOWN_TOOL", "UNKNOWN_ACTION", "MISSING_ARGUMENT", "INVALID_ARGUMENT", "INVALID_PATH", "INVALID_COMMAND"]);
+const FATAL_CODES = new Set(["BUDGET_EXCEEDED", "DANGEROUS_COMMAND", "PATH_TRAVERSAL", "BLOCKED_HOST", "PLAN_INVALID", "PLAN_UNAVAILABLE", "PLAN_EMPTY", "UNKNOWN_TOOL", "UNKNOWN_ACTION", "MISSING_ARGUMENT", "INVALID_ARGUMENT", "INVALID_PATH", "INVALID_COMMAND", "HOOK_BLOCKED", "MODEL_REQUIRED"]);
 
 export class DebuggerAgent implements Agent<Failure, Diagnosis> {
   role: AgentRole = "debugger";

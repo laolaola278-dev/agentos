@@ -22,3 +22,11 @@
 [x] Phase 5 Tests: unit / integration / e2e / recovery / stress / chaos (all passing)
 [x] Phase 6 Docs + benchmark + security review
 [x] Phase 7 Final audit + FINAL-REPORT.md
+[x] Phase 8 Harness upgrade (Claude Code / Codex / ZCode alignment)
+    [x] Task 8.1 Fix stale unit tests (error-message drift after validateActionArgs/extractJson changes)
+    [x] Task 8.2 Model layer: native tool-calling (completeWithTools) + SSE streaming, shared retry pipeline
+    [x] Task 8.3 Agentic mode: LLM drives the tool registry, budgets/checkpoints/verification/review intact
+    [x] Task 8.4 Hooks: pre_tool_call (exit 2 blocks), post_tool_call, task_completed, task_failed via .agentos/config.json
+    [x] Task 8.5 MCP: stdio client, tools registered at runtime start, down-server resilience
+    [x] Task 8.6 Lazy PostgreSQL client (next build works without DATABASE_URL) + restored .env.example
+    [x] Task 8.7 Mocked-provider tests: planner-free agentic scenarios, hooks, MCP server, SSE wire format (83 tests total)

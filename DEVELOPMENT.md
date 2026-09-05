@@ -30,3 +30,14 @@ Add unit tests for: normal call, bad arguments, timeout/cancel, large output.
 
 ## Adding an agent
 Implement `Agent<I, O>` in `agents.ts`, run it via `runAgent()` (emits `agent.*` events), wire it into `orchestrator.ts`.
+
+## Extensions
+- **Hooks** live in `.agentos/config.json` (`config.ts` validates, `HookRunner` executes). A `pre_tool_call` hook that
+  exits 2 blocks the call (`HOOK_BLOCKED` is a fatal code); everything else is advisory. Registry integration:
+  `tools/registry.ts`; task-level hooks fire in `runtime.ts` once a task reaches COMPLETED/FAILED.
+- **MCP servers** are configured in the same file and connected by `mcp.ts` at runtime start; each MCP tool becomes a
+  registry tool with a single `call` action (`mcp_<server>_<tool>`). Failures emit `mcp.failed` and are non-fatal.
+- **Agentic mode**: `spec.mode: "agentic"` runs `AgenticLoopAgent` (agents.ts) instead of the step executor. Keep the
+  invariants: per-tool-call checkpoints, budgets consumed through `BudgetGuard`, verification + reviewer untouched.
+- **Mocked LLM**: `MockModelProvider` (tests/helpers.ts) scripts `completeWithTools` turns; use it for model-driven
+  tests so the suite stays offline and deterministic.

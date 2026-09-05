@@ -14,6 +14,9 @@ import { createModelProviderFromEnv } from "./model";
 import { AGENT_CATALOG } from "./agents";
 import { getGitState } from "./tools/git";
 import { resolveSafePath } from "./security";
+import { loadAgentOsConfig, type AgentOsConfig } from "./config";
+import { HookRunner } from "./hooks";
+import { registerMcpTools, type McpClient, type McpRegistration } from "./mcp";
 
 export type PersistenceKind = "memory" | "file" | "sqlite";
 
@@ -31,6 +34,11 @@ export interface RuntimeOptions {
   defaultBudget?: Partial<typeof DEFAULT_BUDGET>;
   /** Shell executable for terminal and verification commands (or env default). */
   shell?: string;
+  /**
+   * Harness config (hooks, MCP servers). `undefined` loads `<dataDir>/config.json` when present,
+   * `null` disables config loading entirely.
+   */
+  config?: AgentOsConfig | null;
 }
 
 interface RunningEntry {
@@ -94,6 +102,7 @@ export function normalizeTaskSpec(input: TaskSpec, rootDir: string, defaultBudge
   if (input.tags !== undefined && !Array.isArray(input.tags)) throw new AgentOSError("INVALID_SPEC", "tags must be an array");
   const tags = input.tags === undefined ? undefined : [...new Set(input.tags.filter((t): t is string => typeof t === "string" && !!t.trim()).map((t) => t.trim()))];
   if (tags && tags.length > MAX_TAGS) throw new AgentOSError("INVALID_SPEC", `too many tags (max ${MAX_TAGS})`);
+  if (input.mode !== undefined && input.mode !== "plan" && input.mode !== "agentic") throw new AgentOSError("INVALID_SPEC", 'mode must be "plan" or "agentic"');
 
   return {
     ...structuredClone(input),
@@ -148,6 +157,10 @@ export class AgentRuntime {
   readonly queue = new TaskQueue();
   readonly model: ModelProvider | null;
   readonly concurrency: number;
+  readonly config: AgentOsConfig;
+  readonly mcpClients = new Map<string, McpClient>();
+  mcpRegistrations: McpRegistration[] = [];
+  private hooks: HookRunner | null = null;
   private orchestrator: Orchestrator;
   private running = new Map<string, RunningEntry>();
   private waiters = new Map<string, ((t: Task) => void)[]>();
@@ -167,9 +180,14 @@ export class AgentRuntime {
     this.processes = created.processes;
     this.model = opts.model === undefined ? createModelProviderFromEnv() : opts.model;
     this.concurrency = Math.max(1, opts.concurrency ?? 2);
+    this.config = opts.config ?? {};
     this.defaultBudget = { ...DEFAULT_BUDGET, ...(opts.defaultBudget ?? {}) };
     this.orchestrator = new Orchestrator({ persistence, bus: this.bus, tools: this.tools, verification: this.verification, model: this.model, dataDir: this.dataDir, heartbeatMs: opts.heartbeatMs, shell: opts.shell });
     this.metrics.attach(this.bus);
+    if (this.config.hooks && Object.keys(this.config.hooks).length > 0) {
+      this.hooks = new HookRunner(this.config.hooks, { rootDir: this.rootDir, bus: this.bus, shell: opts.shell });
+      this.tools.setHooks(this.hooks);
+    }
     const pollMs = opts.controlPollMs ?? 500;
     if (pollMs > 0) {
       this.controlTimer = setInterval(() => this.pollControl().catch(() => undefined), pollMs);
@@ -188,7 +206,21 @@ export class AgentRuntime {
     } else persistence = p;
     await persistence.init();
     await excludeDataDirFromGit(rootDir, dataDir);
-    const rt = new AgentRuntime({ ...opts, rootDir, dataDir }, persistence);
+    const config = opts.config === undefined ? await loadAgentOsConfig(dataDir) : opts.config;
+    const rt = new AgentRuntime({ ...opts, rootDir, dataDir, config }, persistence);
+    if (config?.mcpServers && Object.keys(config.mcpServers).length > 0) {
+      try {
+        rt.mcpRegistrations = await registerMcpTools(rt.tools, config.mcpServers, {
+          onClient: (name, client) => rt.mcpClients.set(name, client),
+        });
+        await rt.bus.emit({ taskId: null, agentId: null, type: "mcp.registered", data: { servers: rt.mcpRegistrations.map((r) => ({ server: r.server, tools: r.registeredTools })) } });
+      } catch (err) {
+        // a down MCP server must not take the whole runtime offline (Claude Code behaviour)
+        for (const client of rt.mcpClients.values()) client.close();
+        rt.mcpClients.clear();
+        await rt.bus.emit({ taskId: null, agentId: null, type: "mcp.failed", error: err instanceof Error ? err.message : String(err) });
+      }
+    }
     await rt.bus.syncSequence();
     for (const t of await persistence.listTasks()) rt.queue.upsert(t);
     return rt;
@@ -451,6 +483,7 @@ export class AgentRuntime {
         await this.bus.emit({ taskId: task.id, agentId: null, type: "task.failed", error: task.error, data: { fatal: true } });
         result = task;
       } finally {
+        await this.runTaskHooks(task).catch(() => undefined);
         this.processes.stopAllForTask(task.id);
         if (TERMINAL_STATUSES.includes(task.status)) await this.persistence.deleteCheckpoint(task.id).catch(() => undefined);
         this.running.delete(task.id);
@@ -470,6 +503,13 @@ export class AgentRuntime {
     if (!list) return;
     this.waiters.delete(task.id);
     for (const w of list) w(task);
+  }
+
+  /** task_completed / task_failed hooks fire once the orchestrator reached a terminal status. */
+  private async runTaskHooks(task: Task): Promise<void> {
+    if (!this.hooks) return;
+    if (task.status === "COMPLETED" && this.hooks.has("task_completed")) await this.hooks.taskCompleted(task.id, task.result?.summary ?? "");
+    else if (task.status === "FAILED" && this.hooks.has("task_failed")) await this.hooks.taskFailed(task.id, task.error ?? null);
   }
 
   private requireTask(id: string): Task {
@@ -592,7 +632,11 @@ export class AgentRuntime {
     } catch (err) {
       checks.push({ name: "shell", ok: false, detail: err instanceof Error ? err.message : String(err) });
     }
-    checks.push({ name: "model", ok: true, detail: this.model ? `provider ${this.model.name}` : "no LLM configured — deterministic planner only (set LLM_API_KEY to enable)" });
+    checks.push({ name: "model", ok: true, detail: this.model ? `provider ${this.model.name}${this.model.completeWithTools ? " (tool calling supported)" : ""}` : "no LLM configured — deterministic planner only (set LLM_API_KEY to enable)" });
+    const hookCount = Object.values(this.config.hooks ?? {}).reduce((n, l) => n + (l?.length ?? 0), 0);
+    checks.push({ name: "hooks", ok: true, detail: hookCount ? `${hookCount} hook(s) from .agentos/config.json` : "no hooks configured (.agentos/config.json)" });
+    const mcpTools = this.tools.list().filter((t) => t.name.startsWith("mcp_"));
+    checks.push({ name: "mcp", ok: true, detail: mcpTools.length ? `${mcpTools.length} MCP tool(s) from ${this.mcpRegistrations.length} server(s): ${mcpTools.map((t) => t.name).join(", ").slice(0, 300)}` : "no MCP servers configured (.agentos/config.json mcpServers)" });
     const interrupted = this.interruptedTasks();
     checks.push({ name: "interrupted", ok: true, detail: interrupted.length ? `${interrupted.length} task(s) need recovery: ${interrupted.map((t) => t.id).join(", ")}` : "no interrupted tasks" });
     const stats = this.bus.stats;
@@ -604,6 +648,8 @@ export class AgentRuntime {
     this.closed = true;
     if (this.controlTimer) clearInterval(this.controlTimer);
     this.stopDaemon();
+    for (const client of this.mcpClients.values()) client.close();
+    this.mcpClients.clear();
     for (const entry of this.running.values()) entry.controller.abort("pause");
     await Promise.allSettled([...this.running.values()].map((e) => e.promise));
     await this.processes.shutdown();

@@ -3,6 +3,7 @@ import type { Tool, ToolActionDef, ToolContext, ToolErrorInfo, ToolInput, ToolOu
 import { ToolError, errorMessage, isAbortError } from "../types";
 import type { EventBus } from "../events";
 import { buildSafeEnv } from "../security";
+import type { HookRunner } from "../hooks";
 
 export interface ToolDescriptor {
   name: string;
@@ -90,10 +91,17 @@ export function toToolErrorInfo(err: unknown): ToolErrorInfo {
 
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
+  private hooks: HookRunner | null = null;
 
   register(tool: Tool): this {
     if (this.tools.has(tool.name)) throw new Error(`tool already registered: ${tool.name}`);
     this.tools.set(tool.name, tool);
+    return this;
+  }
+
+  /** Attaches lifecycle hooks (`.agentos/config.json`); a pre_tool_call hook exiting 2 blocks the call. */
+  setHooks(hooks: HookRunner | null): this {
+    this.hooks = hooks;
     return this;
   }
 
@@ -144,6 +152,16 @@ export class ToolRegistry {
       return output;
     }
 
+    // pre_tool_call hooks: exit code 2 blocks the call, other failures are recorded only
+    if (this.hooks?.has("pre_tool_call")) {
+      const outcome = await this.hooks.preToolCall(opts.taskId, toolName, input.action, input.args, opts.signal).catch((): { blocked: boolean; message?: string } => ({ blocked: false }));
+      if (outcome.blocked) {
+        const output = finish({ ok: false, error: { code: "HOOK_BLOCKED", message: outcome.message ?? "blocked by pre_tool_call hook", retryable: false } });
+        await bus?.emit({ ...base, type: "tool.failed", args: input, error: `${output.error!.code}: ${output.error!.message}`, durationMs: output.durationMs });
+        return output;
+      }
+    }
+
     await bus?.emit({ ...base, type: "tool.started", args: input });
     const { signal, cleanup, timedOut } = combineSignals(opts.signal, timeoutMs);
     const logs: string[] = [];
@@ -168,16 +186,25 @@ export class ToolRegistry {
       const { value, truncated } = truncatePayload(raw, maxOutputBytes);
       const output = finish({ ok: true, data: value, truncated: truncated || undefined });
       await bus?.emit({ ...base, type: "tool.completed", args: input, result: value, durationMs: output.durationMs, data: logs.length ? { logs } : undefined });
+      await this.runPostHooks(opts, toolName, input, output, signal);
       return output;
     } catch (err) {
       let info = toToolErrorInfo(err);
       if (timedOut()) info = { code: "TIMEOUT", message: `tool timed out after ${timeoutMs}ms`, retryable: true };
       const output = finish({ ok: false, error: info });
       await bus?.emit({ ...base, type: "tool.failed", args: input, error: `${info.code}: ${info.message}`, durationMs: output.durationMs, data: { code: info.code, retryable: info.retryable } });
+      await this.runPostHooks(opts, toolName, input, output, signal);
       return output;
     } finally {
       cleanup();
     }
+  }
+
+  private async runPostHooks(opts: ExecuteOptions, toolName: string, input: ToolInput, output: ToolOutput, signal?: AbortSignal): Promise<void> {
+    if (!this.hooks?.has("post_tool_call")) return;
+    await this.hooks
+      .postToolCall(opts.taskId, toolName, input.action, { ok: output.ok, data: output.data, error: output.error }, signal)
+      .catch(() => undefined);
   }
 }
 

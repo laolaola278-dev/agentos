@@ -28,6 +28,7 @@ All responses pass through `redactSecrets`. Errors: `{error, code}` with 400/404
   acceptance?: { type: "file_exists"|"file_contains"|"file_not_contains"|"command_succeeds"; path?; text?; command? }[];
   budget?: { maxRetries?: number; timeoutMs?: number; maxToolCalls?: number; maxTokens?: number };
   workdir?: string; isolated?: boolean; tags?: string[];
+  mode?: "plan" | "agentic";   // agentic: LLM drives the tool registry (needs LLM_API_KEY with tool calling)
 }
 ```
 
@@ -48,7 +49,8 @@ rt.startDaemon(); await rt.close();
 ```
 
 Extending: implement `Tool` and `registry.register(tool)` (pass `tools` to `AgentRuntime.create`); implement `Persistence`
-for another store; implement `ModelProvider` for another LLM API.
+for another store; implement `ModelProvider` for another LLM API (`completeWithTools` enables agentic mode).
+Runtime options accept `config` (`hooks` + `mcpServers`, also auto-loaded from `<dataDir>/config.json`; see README).
 
 ## Tools
 

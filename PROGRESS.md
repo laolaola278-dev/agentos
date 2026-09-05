@@ -21,3 +21,21 @@
 - Verified against real PostgreSQL: API-created task COMPLETED/PASS, 31 events persisted, SSE streamed, Prometheus exported.
 - CLI gained `--store pg`; bin/agentos.js launcher; benchmark script with measured results → BENCHMARK.md.
 - Docs written; audit: no TODO/FIXME/stub/placeholder; full suite 58/58; lint + typecheck clean; next build OK.
+
+## Round 4 — harness upgrade (Claude Code / Codex / ZCode alignment)
+- Baseline audit found 2 stale unit tests (validatePlan read-args, extractJson message) — repo had also lost its `.git`
+  and `.env.example` when re-extracted from the zip; both restored, baseline committed before changes.
+- Model layer: `completeWithTools` (OpenAI-compatible function calling) and SSE `stream()`; one shared
+  timeout/abort/retry/redaction pipeline; tool messages mapped natively (text endpoints get flattened turns).
+- Agentic mode: `AgenticLoopAgent` + `spec.mode: "agentic"`; model proposes tool calls per turn, results fed back,
+  per-call checkpoints, budgets terminal, conversation trimmed in whole tool-pairs; verification + reviewer unchanged.
+- Hooks: `config.ts` (validated `.agentos/config.json`) + `HookRunner`; `pre_tool_call` exit 2 → `HOOK_BLOCKED`
+  (added to fatal codes), post/task hooks non-blocking; wired into `ToolRegistry.execute` and runtime terminal states;
+  `hook.executed` events; payload redacted; child env rebuilt via `buildSafeEnv` (PATH must survive!).
+- MCP: stdio JSON-RPC client (`initialize`/`tools/list`/`tools/call`, cursor pagination, request timeouts), one registry
+  tool per MCP tool (`mcp_<server>_<tool>.call`), down server → `mcp.failed` + runtime stays usable; `close()` awaits
+  child exit so Windows tmp cleanup is reliable.
+- DB: lazy drizzle client — `next build` no longer requires DATABASE_URL; `.env.example` restored.
+- Tests: +25 (mocked-provider agentic scenarios incl. unknown-tool recovery + budget exhaustion, hooks block/advise/post,
+  MCP end-to-end with a test stdio server, config validation, SSE wire format). 83/83, lint + typecheck + build clean.
+- CLI smoke test on real FS: DSL task COMPLETED/review PASS, config.json hook auto-loaded and executed.

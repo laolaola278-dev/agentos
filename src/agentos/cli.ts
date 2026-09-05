@@ -38,7 +38,7 @@ Usage: agentos <command> [options]
 
 Commands:
   init                          Initialise .agentos/ in the current directory
-  task create                   Create a task (--title, --goal | --spec file.json, --priority, --depends id, --step tool.action:'{json}', --verify cmd, --isolated)
+  task create                   Create a task (--title, --goal | --spec file.json, --priority, --depends id, --step tool.action:'{json}', --verify cmd, --isolated, --mode plan|agentic)
   task run <id|--spec file>     Run a task in the foreground and stream events (creates it first when --spec/--goal is given)
   task start <id>               Enqueue a task for the daemon / next run
   task status [id]              Show one task or list all (--status FILTER, --json)
@@ -64,6 +64,10 @@ Global options:
   --shell <path>      Shell for commands (auto-detected; env AGENTOS_SHELL)
   --json              Machine-readable output
   --help, -h          Show help
+
+Extensions (.agentos/config.json):
+  hooks               pre_tool_call (exit 2 blocks the tool), post_tool_call, task_completed, task_failed
+  mcpServers          MCP servers whose tools join the registry at startup (stdio transport)
 `;
 
 /** Loads .env from the root and connects to PostgreSQL (shared with the dashboard). */
@@ -96,6 +100,10 @@ async function loadSpec(flags: ParsedArgs["flags"]): Promise<TaskSpec> {
   if (typeof flags.title === "string") spec.title = flags.title;
   if (typeof flags.goal === "string") spec.goal = flags.goal.replace(/\\n/g, "\n");
   if (typeof flags["goal-file"] === "string") spec.goal = await fsp.readFile(flags["goal-file"], "utf8");
+  if (typeof flags.mode === "string") {
+    if (flags.mode !== "plan" && flags.mode !== "agentic") throw new Error(`invalid --mode "${flags.mode}" (expected "plan" or "agentic")`);
+    spec.mode = flags.mode;
+  }
   if (flags.priority !== undefined) spec.priority = Number(flags.priority);
   if (flags.depends !== undefined) spec.dependsOn = ([] as string[]).concat(flags.depends as string | string[]);
   if (flags.isolated) spec.isolated = true;

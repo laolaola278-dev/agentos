@@ -14,6 +14,7 @@ keep secrets out of logs/stores, and make it impossible for a misbehaving tool/p
 | Protected paths | Reviewer rejects plans writing into `node_modules/` or `.git/`; filesystem refuses to delete the workdir root. |
 | Resource limits | Tool output truncation, read size caps, list/search caps, event payload truncation, bounded pending-event buffer, budgets (tool calls, tokens, wall clock, retries). |
 | Storage integrity | Atomic file writes (tmp + fsync + rename); JSONL reader tolerates a torn trailing line; corrupt task/checkpoint files are skipped; SQLite WAL + busy timeout. |
+| Hooks / MCP config | `.agentos/config.json` is **user-authored and trusted** (same trust level as Claude Code settings): hook commands run with the full local shell under an explicit `allowDangerous` grant, but with a filtered env plus `AGENTOS_*` metadata and a redacted stdin payload. Hook payloads, event data and hook stderr are redacted before they reach the store. A `pre_tool_call` hook is the supported way to add policy without touching the runtime. MCP servers are spawned from this config only; their tools execute server-side, so only add servers you trust. A failing hook or a down MCP server degrades gracefully (advisory / `mcp.failed` event) and never silently bypasses policy. |
 
 Known limitations: commands are not sandboxed by the OS (no seccomp/containers) — a determined command can still reach
 outside the workdir through absolute paths; use containers for untrusted goals. LLM output is validated structurally

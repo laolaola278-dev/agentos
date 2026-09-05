@@ -37,7 +37,10 @@
 | `orchestrator.ts` | The per-task state machine, checkpointing, self-correction loop, retry policy, FAILURE_ANALYSIS.md |
 | `runtime.ts` | Façade: create/start/run/pause/resume/cancel/retry/recover, scheduler, control channel, daemon, doctor |
 | `metrics.ts` | O(1) counters/timings fed by the bus; JSON + Prometheus text |
-| `model.ts` | `ModelProvider` interface, OpenAI-compatible client, env factory, JSON extraction |
+| `model.ts` | `ModelProvider` interface, OpenAI-compatible client (text `complete`, native tool-calling `completeWithTools`, SSE `stream`), env factory, JSON extraction |
+| `config.ts` | `.agentos/config.json` schema + validation: lifecycle hooks and MCP servers |
+| `hooks.ts` | `HookRunner`: runs `pre_tool_call` / `post_tool_call` / `task_completed` / `task_failed` hooks (Claude Code semantics: exit 2 blocks); payload via stdin, redacted |
+| `mcp.ts` | Minimal MCP stdio client (JSON-RPC over newline-delimited stdio): initialize → tools/list → tools/call; registers each MCP tool as a registry tool `mcp_<server>_<tool>` |
 | `cli.ts` | Command line interface |
 | `server.ts` | Next.js server singleton (PG persistence, auto-recover, daemon) |
 
@@ -56,6 +59,16 @@ CREATED → QUEUED → PLANNING → EXECUTING → VERIFYING → REVIEWING → CO
 
 Budgets: `maxRetries` (task attempts *and* fix attempts), `timeoutMs` (wall clock across resumes), `maxToolCalls`, `maxTokens`.
 Budget violations are terminal (never retried).
+
+### Execution modes
+
+- **plan** (default): the planner produces a static step plan (spec → goal DSL → model) and the executor runs it
+  deterministically with retries.
+- **agentic** (`spec.mode: "agentic"`, requires an LLM with native tool calling): the model drives the tool registry in a
+  loop — it proposes one or more tool calls per turn, each call is executed through the same registry (budgets, hooks,
+  checkpoints) and the structured result is fed back, until the model answers without tool calls. The conversation is
+  trimmed to whole tool-call turns so provider pairing rules stay intact; `PLANNING` emits an empty marker plan and the
+  transcript lands in `completedSteps`, so verification, reviewer, debugger and recovery behave exactly as in plan mode.
 
 ## Checkpoint / recovery
 
@@ -77,5 +90,13 @@ branch is kept for inspection).
 `task.created|queued|started|resumed|planned|executing|verifying|fixing|reviewing|diagnosing|retrying|paused|cancelled|blocked|completed|failed|recovering|control`,
 `agent.started|completed|failed|tool_call|retry`, `tool.started|completed|failed`, `test.started|passed|failed`,
 `review.check_passed|check_failed|git_state|completed`, `task.diagnosed`, `checkpoint.saved`, `workspace.isolated`,
-`integrator.committed|merged|conflict`, `model.completed`.
+`integrator.committed|merged|conflict`, `model.completed`, `hook.executed`, `mcp.registered|failed`, `acceptance.passed|failed`.
 Every event carries `ts, seq, taskId, agentId, type, tool, args, result, durationMs, error, data` (args/result/data redacted).
+
+## Extensions (`.agentos/config.json`)
+
+- **hooks** — `pre_tool_call` (exit 2 blocks the call with `HOOK_BLOCKED`; stderr becomes the reason), `post_tool_call`,
+  `task_completed`, `task_failed`. Payload on stdin, event metadata in `AGENTOS_*` env vars, all redacted; `hook.executed`
+  events record every run. Wired into `ToolRegistry.execute` and the runtime's terminal-state handler.
+- **mcpServers** — connected at runtime start (stdio JSON-RPC); failures emit `mcp.failed` and are non-fatal. MCP tools
+  participate in plans, DSL, agentic mode, budgets and checkpoints like built-in tools.

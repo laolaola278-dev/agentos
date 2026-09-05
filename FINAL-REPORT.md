@@ -102,3 +102,30 @@ process tool limited to runtime-owned processes. Limitation: no OS-level sandbox
 ## Final verification
 - `npm run test:all`: 58/58 pass · `npm run lint`: clean · `npm run typecheck`: clean · `npm run build`: success
 - `next typegen`, `tsc --noEmit`, `next build`, and platform `build_and_start` (health check) executed at the end of the session.
+
+---
+
+# ADDENDUM — Round 4: harness upgrade (Claude Code / Codex / ZCode alignment)
+
+Closed the main gaps versus modern agent harnesses while keeping AgentOS's objective-evidence model:
+
+1. **Native LLM tool-calling** — `ModelProvider.completeWithTools()` (OpenAI-compatible function calling) with the shared
+   timeout/abort/retry/redaction pipeline; assistant tool_calls and tool results mapped natively, flattened for
+   text-only endpoints.
+2. **Agentic mode** (`spec.mode: "agentic"`) — `AgenticLoopAgent` drives the tool registry turn by turn (Claude Code /
+   Codex core loop). Per-tool-call checkpoints, `BudgetGuard` enforcement, tool-pair-preserving conversation trimming,
+   invalid tool calls fed back to the model, and verification + independent reviewer still gate COMPLETED.
+3. **SSE streaming** — `ModelProvider.stream()` yields text deltas and a final completion (wire-format tested).
+4. **Hooks** — `.agentos/config.json` (`config.ts` + `HookRunner`): `pre_tool_call` (exit 2 → `HOOK_BLOCKED`, fatal),
+   `post_tool_call`, `task_completed`, `task_failed`; redacted stdin payload, `AGENTOS_*` env metadata, `hook.executed`
+   events; wired into `ToolRegistry.execute` and the runtime terminal states.
+5. **MCP** — stdio JSON-RPC client (`mcp.ts`): initialize/tools-list/tools-call with cursor pagination and timeouts;
+   every MCP tool becomes registry tool `mcp_<server>_<tool>.call`; a down server emits `mcp.failed` and the runtime
+   keeps working; `close()` awaits child exit (Windows-safe cleanup).
+6. **Infrastructure** — lazy drizzle client (`next build` no longer needs `DATABASE_URL`), restored `.env.example`,
+   restored git tracking, fixed 2 stale unit tests, `HOOK_BLOCKED`/`MODEL_REQUIRED` added to fatal diagnosis codes.
+
+New/changed modules: `model.ts`, `config.ts`, `hooks.ts`, `mcp.ts`, `tools/registry.ts`, `agents.ts`, `orchestrator.ts`,
+`runtime.ts`, `cli.ts`, `src/db/index.ts`. Tests: 83/83 (25 new: agentic scenarios incl. unknown-tool recovery and
+budget exhaustion, hooks blocking/adaptive/post semantics, MCP end-to-end against a test stdio server, config
+validation, SSE wire format, schema mapping). Lint, typecheck and `next build` clean.

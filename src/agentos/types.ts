@@ -110,7 +110,15 @@ export interface TaskSpec {
   tags?: string[];
   /** When true the executor runs inside an isolated git worktree and the integrator merges it back. */
   isolated?: boolean;
+  /**
+   * Execution mode. `plan` (default) derives a static step plan and runs it deterministically.
+   * `agentic` lets an LLM drive the tool registry in a loop (Claude Code / Codex style);
+   * verification and the independent reviewer still gate completion with objective evidence.
+   */
+  mode?: ExecutionMode;
 }
+
+export type ExecutionMode = "plan" | "agentic";
 
 export interface TaskUsage {
   toolCalls: number;
@@ -251,6 +259,12 @@ export interface Message {
   content: string;
   ts: string;
   agent?: AgentRole;
+  /** Assistant message: tool invocations requested by the model (agentic loop). */
+  toolCalls?: ToolCallRequest[];
+  /** Tool message: id of the tool call this result answers. */
+  toolCallId?: string;
+  /** Tool message: registry name of the tool that produced the result. */
+  name?: string;
 }
 
 export interface GitState {
@@ -347,9 +361,45 @@ export interface ModelCompletion {
   tokens: number;
 }
 
+/** A tool invocation requested by the model. `arguments` is the raw JSON string from the provider. */
+export interface ToolCallRequest {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+/** JSON-schema description of a tool handed to the model (OpenAI function-calling format). */
+export interface ToolSchema {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export interface ModelToolCompletion {
+  content: string;
+  toolCalls: ToolCallRequest[];
+  tokens: number;
+  finishReason?: string;
+}
+
+/** Incremental chunk of a streamed model response. */
+export interface ModelStreamEvent {
+  /** Text delta (may be empty while the model emits tool calls). */
+  delta?: string;
+  /** Set on the final event, mirroring the non-streaming completion. */
+  completion?: ModelToolCompletion;
+}
+
 export interface ModelProvider {
   name: string;
   complete(messages: Message[], opts?: { json?: boolean; maxTokens?: number; signal?: AbortSignal }): Promise<ModelCompletion>;
+  /**
+   * Native tool-calling completion (OpenAI-compatible `tools` / `tool_calls`).
+   * Optional: harnesses fall back to JSON-mode `complete()` when absent.
+   */
+  completeWithTools?(messages: Message[], tools: ToolSchema[], opts?: { maxTokens?: number; signal?: AbortSignal }): Promise<ModelToolCompletion>;
+  /** Optional SSE streaming; yields text deltas and a final completion. */
+  stream?(messages: Message[], opts?: { maxTokens?: number; signal?: AbortSignal }): AsyncIterable<ModelStreamEvent>;
 }
 
 // ---- Errors -----------------------------------------------------------

@@ -14,6 +14,58 @@ Without an LLM key the planner is **deterministic** (a small goal DSL, or explic
 an OpenAI-compatible model plans free-form goals, proposes fixes and performs an additional independent review.
 Either way, a task can only complete with objective evidence (verification commands + reviewer PASS).
 
+## Agentic mode (LLM tool-calling loop)
+
+Modeled after the Claude Code / Codex core loop, a task can run in **agentic mode**, where the model drives the tool
+registry directly: it proposes tool calls each turn, observes the structured results and decides the next action until
+it declares the goal met. The harness stays in charge — budgets, per-call checkpoints, the verification engine and the
+independent reviewer still gate completion with objective evidence.
+
+```bash
+export LLM_API_KEY=sk-...        # native tool calling required (OpenAI-compatible API)
+./bin/agentos.js task run --mode agentic --goal 'add a REST endpoint /health to src/server.ts with a test'
+```
+
+Works with any OpenAI-compatible endpoint (OpenAI, DeepSeek, GLM, Ollama, vLLM — set `LLM_BASE_URL`/`LLM_MODEL`).
+
+## Hooks (`.agentos/config.json`)
+
+Lifecycle hooks in the style of Claude Code: a JSON payload describing the event goes to the hook command's stdin;
+environment carries `AGENTOS_HOOK_EVENT` / `AGENTOS_TOOL` / `AGENTOS_ACTION` / `AGENTOS_TASK_ID`.
+
+| event | exit code 2 | other non-zero |
+|---|---|---|
+| `pre_tool_call` | **blocks the tool call** (`HOOK_BLOCKED`, stderr is the reason) | recorded, non-blocking |
+| `post_tool_call` | non-blocking | recorded, non-blocking |
+| `task_completed` / `task_failed` | non-blocking | recorded, non-blocking |
+
+```json
+{
+  "hooks": {
+    "pre_tool_call": [{ "match": "terminal.*", "command": "node scripts/guard-terminal.js" }],
+    "post_tool_call": [{ "match": "filesystem.write", "command": "node scripts/audit-write.js" }],
+    "task_completed": [{ "command": "node scripts/notify.js" }]
+  }
+}
+```
+
+`match` is `*` (default), `tool`, `tool.*` or `tool.action`.
+
+## MCP servers (Model Context Protocol)
+
+External tools join the registry at startup via the stdio transport, like Claude Code / Codex:
+
+```json
+{
+  "mcpServers": {
+    "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"], "env": { "GITHUB_TOKEN": "..." } }
+  }
+}
+```
+
+Each MCP tool becomes a registry tool named `mcp_<server>_<tool>` with a single `call` action, usable in `steps`,
+the goal DSL `git:`-style plans and agentic mode. A down server emits `mcp.failed` and never blocks the runtime.
+
 ## Install
 
 ```bash
@@ -74,9 +126,11 @@ created by `./bin/agentos.js --store pg task create ...` are picked up too. See 
 
 ```bash
 export LLM_API_KEY=...            # or OPENAI_API_KEY
-export LLM_BASE_URL=https://api.openai.com/v1   # any OpenAI-compatible endpoint (Ollama, vLLM, ...)
+export LLM_BASE_URL=https://api.openai.com/v1   # any OpenAI-compatible endpoint (Ollama, vLLM, DeepSeek, GLM...)
 export LLM_MODEL=gpt-4o-mini
 ```
+
+See [.env.example](.env.example) for all variables (dashboard `DATABASE_URL`, timeouts, retries).
 
 ## Test
 

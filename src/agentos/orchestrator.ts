@@ -8,6 +8,7 @@ import type { EventBus } from "./events";
 import type { ToolRegistry } from "./tools/registry";
 import { VerificationEngine } from "./verification";
 import {
+  AgenticLoopAgent,
   BudgetGuard,
   DebuggerAgent,
   ExecutorAgent,
@@ -193,12 +194,36 @@ export class Orchestrator {
         switch (cp.phase) {
           case "PLANNING": {
             let research: ResearchReport | null = null;
+            if (task.spec.mode === "agentic") {
+              if (!this.model?.completeWithTools) throw new AgentOSError("MODEL_REQUIRED", "mode=agentic requires a model provider with native tool calling (set LLM_API_KEY)");
+              // the researcher's workspace report lands in the checkpoint messages, which seed the agentic conversation
+              await runAgent(researcher, ctx(), undefined);
+              cp.plan = { steps: [], rationale: "agentic mode: the model drives tool calls directly; verification and review still gate completion", source: "model" };
+              await bus.emit({ taskId: task.id, agentId: null, type: "task.planned", data: { source: "agentic", steps: 0, rationale: cp.plan.rationale } });
+              await save();
+              await setPhase("EXECUTING");
+              break;
+            }
             if (!task.spec.steps?.length && this.model) research = (await runAgent(researcher, ctx(), undefined)).output;
             cp.plan = (await runAgent(planner, ctx(), { research })).output;
             await setPhase("EXECUTING");
             break;
           }
           case "EXECUTING": {
+            if (task.spec.mode === "agentic") {
+              const agentic = new AgenticLoopAgent();
+              let turns = 0;
+              await runAgent(agentic, ctx(), {
+                onTurn: async (r) => {
+                  turns++;
+                  cp.completedSteps.push(r);
+                  cp.progress = Math.min(69, 20 + turns);
+                  await save();
+                },
+              });
+              await setPhase("VERIFYING");
+              break;
+            }
             const plan = cp.plan as Plan;
             const remaining = plan.steps.slice(planCursor());
             const failed = await executeSteps(remaining, "plan");
