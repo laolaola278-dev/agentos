@@ -173,19 +173,29 @@ export class OpenAICompatibleProvider implements ModelProvider {
     };
   }
 
-  /** SSE streaming: yields text deltas as they arrive and a final completion with accumulated tool calls. */
-  async *stream(messages: Message[], opts: { maxTokens?: number; signal?: AbortSignal } = {}): AsyncGenerator<ModelStreamEvent> {
+  /**
+   * SSE streaming: yields text deltas as they arrive and a final completion with
+   * accumulated tool calls (when `tools` was provided).
+   */
+  async *stream(messages: Message[], opts: { tools?: ToolSchema[]; maxTokens?: number; signal?: AbortSignal } = {}): AsyncGenerator<ModelStreamEvent> {
     const body: Record<string, unknown> = {
       model: this.model(),
-      messages: toApiMessages(messages, { nativeTools: false }),
+      messages: toApiMessages(messages, { nativeTools: !!opts.tools?.length }),
       temperature: 0,
       max_tokens: Math.max(1, Math.min(opts.maxTokens ?? 2048, 1_000_000)),
       stream: true,
     };
+    if (opts.tools?.length) {
+      body.tools = opts.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
+      body.tool_choice = "auto";
+    }
     const res = await this.chat(body, { signal: opts.signal, stream: true });
     if (!res.body) throw new AgentOSError("MODEL_ERROR", "model response has no body", { retryable: true });
     let content = "";
+    let finishReason: string | undefined;
     let tokens = 0;
+    // tool_calls arrive as fragments across chunks, keyed by their `index`
+    const toolAcc = new Map<number, { id?: string; name?: string; args: string }>();
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -207,11 +217,23 @@ export class OpenAICompatibleProvider implements ModelProvider {
           } catch {
             continue; // keep-alive comments / partial lines
           }
-          const delta = parseContent(chunk.choices?.[0]?.delta?.content);
+          const choice = chunk.choices?.[0];
+          const delta = parseContent(choice?.delta?.content);
           if (delta) {
             content += delta;
             yield { delta };
           }
+          if (Array.isArray(choice?.delta?.tool_calls)) {
+            for (const frag of choice!.delta!.tool_calls as { index?: number; id?: string; function?: { name?: string; arguments?: string } }[]) {
+              const idx = typeof frag.index === "number" ? frag.index : 0;
+              const acc = toolAcc.get(idx) ?? { args: "" };
+              if (frag.id) acc.id = frag.id;
+              if (frag.function?.name) acc.name = (acc.name ?? "") + frag.function.name;
+              if (frag.function?.arguments) acc.args += frag.function.arguments;
+              toolAcc.set(idx, acc);
+            }
+          }
+          if (choice?.finish_reason) finishReason = choice.finish_reason;
           const reported = Number(chunk.usage?.total_tokens);
           if (Number.isFinite(reported) && reported > 0) tokens = reported;
         }
@@ -219,7 +241,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
     } finally {
       reader.releaseLock();
     }
-    yield { completion: { content, tokens: tokens || Math.ceil(content.length / 4), toolCalls: [], finishReason: "stop" } };
+    const toolCalls = parseToolCalls(
+      [...toolAcc.entries()].sort(([a], [b]) => a - b).map(([, acc]) => ({ id: acc.id, function: { name: acc.name, arguments: acc.args } })),
+    );
+    yield { completion: { content, toolCalls, tokens: tokens || Math.ceil((content.length + toolCalls.reduce((n, c) => n + c.arguments.length, 0)) / 4), finishReason: finishReason ?? (toolCalls.length ? "tool_calls" : "stop") } };
   }
 }
 

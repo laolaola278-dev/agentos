@@ -13,3 +13,4 @@ export * from "./mcp";
 export * from "./agents";
 export * from "./orchestrator";
 export * from "./runtime";
+export * from "./chat";

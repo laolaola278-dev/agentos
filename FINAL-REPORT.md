@@ -129,3 +129,24 @@ New/changed modules: `model.ts`, `config.ts`, `hooks.ts`, `mcp.ts`, `tools/regis
 `runtime.ts`, `cli.ts`, `src/db/index.ts`. Tests: 83/83 (25 new: agentic scenarios incl. unknown-tool recovery and
 budget exhaustion, hooks blocking/adaptive/post semantics, MCP end-to-end against a test stdio server, config
 validation, SSE wire format, schema mapping). Lint, typecheck and `next build` clean.
+
+---
+
+# ADDENDUM — Round 5: audit remediation
+
+An independent audit confirmed the Round-4 claims and flagged five gaps; all closed in this round:
+
+1. **`stream()` was dead code** → now the default agentic path: the provider reassembles streamed `tool_calls` fragments
+   (index-keyed, split-argument tested), the loop emits transient `model.delta` events (fan-out only, never persisted),
+   and `task run` / `agentos chat` render deltas inline.
+2. **No real-provider coverage** → `npm run test:smoke` tier (`LLM_SMOKE=1` + key) drives a genuine agentic task; mocked
+   suites remain offline/deterministic.
+3. **No PostgreSQL regression** → `tests/integration/pg.test.ts` runs against a live server (`TEST_DATABASE_URL`),
+   verified on real PostgreSQL here: full lifecycle, second-runtime replay (dashboard boot path), checkpoint round-trip.
+4. **STATE.md count drift** → corrected with measured per-suite numbers (unit 61, integration 25, e2e 2, recovery 4,
+   chaos 5, stress 4 = 101).
+5. **Interactive/permission gap vs mainstream CLIs** → `agentos chat` REPL (streamed transcript, /tools /tasks /auto
+   /confirm, Ctrl-C cancels the running task) and a `confirm` permission gate with fail-closed `PERMISSION_DENIED`;
+   plus AGENTS.md project instructions and automatic context compaction.
+
+Final verification: `TEST_DATABASE_URL=... npm run test:all` → 101/101 · lint clean · typecheck clean · `next build` OK.

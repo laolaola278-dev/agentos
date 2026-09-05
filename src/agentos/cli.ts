@@ -55,6 +55,7 @@ Commands:
   doctor                        Environment and store diagnostics
   recover [id]                  Resume tasks interrupted by a crash (all, or one)
   daemon                        Run the scheduler loop, executing queued tasks until Ctrl-C
+  chat [--auto]                 Interactive session: type goals, watch the agent work (LLM required)
 
 Global options:
   --root <dir>        Workspace root (default: cwd)
@@ -198,6 +199,14 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         out(tasks, json, () => tasks.map(fmtTask).join("\n"));
         return tasks.every((t) => t.status === "COMPLETED") ? 0 : 1;
       }
+      case "chat": {
+        const { runChat } = await import("./chat");
+        console.error(`agentos chat (store=${storeName}, model=${rt.model?.name ?? "none"})`);
+        return await runChat(rt, {
+          autoApprove: flags.auto === true,
+          maxToolCalls: flags["max-tool-calls"] ? Number(flags["max-tool-calls"]) : undefined,
+        });
+      }
       case "daemon": {
         const r = await rt.recoverAll();
         if (r.recovered.length) console.error(`recovered ${r.recovered.length} interrupted task(s)`);
@@ -233,14 +242,34 @@ async function taskCommand(rt: AgentRuntime, sub: string | undefined, rest: stri
       let taskId = id;
       if (!taskId || flags.spec || flags.goal) taskId = (await rt.createTask(await loadSpec(flags))).id;
       const quiet = flags.quiet === true;
+      let inDelta = false;
+      const endDelta = () => {
+        if (inDelta) {
+          process.stdout.write("\n");
+          inDelta = false;
+        }
+      };
       const unsub = rt.bus.subscribe((e) => {
         if (quiet) return;
+        if (e.type === "model.delta") {
+          // stream the model's text live; transient events are not in the persisted log
+          if (json) console.log(JSON.stringify(e));
+          else {
+            inDelta = true;
+            process.stdout.write(String((e.data as { text?: string } | undefined)?.text ?? ""));
+          }
+          return;
+        }
         if (json) console.log(JSON.stringify(e));
-        else if (!e.type.startsWith("checkpoint.")) console.log(fmtEvent(e));
+        else if (!e.type.startsWith("checkpoint.")) {
+          endDelta();
+          console.log(fmtEvent(e));
+        }
       }, { taskId });
       const task = rt.getTask(taskId)!;
       const done = task.status === "PAUSED" ? (await rt.resumeTask(taskId), await rt.waitForTask(taskId)) : await rt.runTask(taskId);
       unsub();
+      endDelta();
       out(done, json, () => `\n${fmtTask(done)}\n${done.result?.summary ?? ""}`);
       return done.status === "COMPLETED" ? 0 : 1;
     }

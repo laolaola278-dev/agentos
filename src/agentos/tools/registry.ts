@@ -1,9 +1,15 @@
 import { performance } from "node:perf_hooks";
-import type { Tool, ToolActionDef, ToolContext, ToolErrorInfo, ToolInput, ToolOutput } from "../types";
+import type { Tool, ToolActionDef, ToolContext, ToolErrorInfo, ToolInput, ToolOutput, PermissionRequest } from "../types";
 import { ToolError, errorMessage, isAbortError } from "../types";
 import type { EventBus } from "../events";
 import { buildSafeEnv } from "../security";
 import type { HookRunner } from "../hooks";
+
+/** Human-in-the-loop gate: "confirm" asks `request` before every tool execution. */
+export interface PermissionGate {
+  mode: "auto" | "confirm";
+  request: (req: PermissionRequest) => Promise<boolean>;
+}
 
 export interface ToolDescriptor {
   name: string;
@@ -92,6 +98,7 @@ export function toToolErrorInfo(err: unknown): ToolErrorInfo {
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
   private hooks: HookRunner | null = null;
+  private permissionGate: PermissionGate | null = null;
 
   register(tool: Tool): this {
     if (this.tools.has(tool.name)) throw new Error(`tool already registered: ${tool.name}`);
@@ -102,6 +109,12 @@ export class ToolRegistry {
   /** Attaches lifecycle hooks (`.agentos/config.json`); a pre_tool_call hook exiting 2 blocks the call. */
   setHooks(hooks: HookRunner | null): this {
     this.hooks = hooks;
+    return this;
+  }
+
+  /** Attaches the human-in-the-loop gate ("auto" never prompts). */
+  setPermissionGate(gate: PermissionGate | null): this {
+    this.permissionGate = gate;
     return this;
   }
 
@@ -150,6 +163,21 @@ export class ToolRegistry {
       });
       await bus?.emit({ ...base, type: "tool.failed", args: input, error: output.error!.message, durationMs: output.durationMs });
       return output;
+    }
+
+    // human-in-the-loop: confirm mode asks before every execution; a failed prompt denies (fail-closed)
+    if (this.permissionGate?.mode === "confirm") {
+      let allowed = false;
+      try {
+        allowed = await this.permissionGate.request({ taskId: opts.taskId, tool: toolName, action: input.action, args: input.args });
+      } catch {
+        allowed = false;
+      }
+      if (!allowed) {
+        const output = finish({ ok: false, error: { code: "PERMISSION_DENIED", message: `user denied ${toolName}.${input.action}`, retryable: false } });
+        await bus?.emit({ ...base, type: "tool.failed", args: input, error: `${output.error!.code}: ${output.error!.message}`, durationMs: output.durationMs });
+        return output;
+      }
     }
 
     // pre_tool_call hooks: exit code 2 blocks the call, other failures are recorded only

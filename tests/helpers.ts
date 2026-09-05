@@ -63,13 +63,34 @@ export class MockModelProvider implements ModelProvider {
     return { content: turn.content, toolCalls: turn.toolCalls, tokens: turn.tokens, finishReason: turn.finishReason };
   }
 
-  async *stream(messages: Message[]): AsyncGenerator<ModelStreamEvent> {
-    const { content } = await this.complete(messages);
-    for (const part of content.match(/[\s\S]{1,8}/g) ?? []) yield { delta: part };
-    yield { completion: { content, tokens: Math.ceil(content.length / 4), toolCalls: [] } };
+  async *stream(messages: Message[], opts: { tools?: ToolSchema[] } = {}): AsyncGenerator<ModelStreamEvent> {
+    // exercise the same scripted turns as completeWithTools so the agentic
+    // streaming path is covered without network access
+    if (!opts.tools?.length) {
+      const { content } = await this.complete(messages);
+      for (const part of content.match(/[\s\S]{1,8}/g) ?? []) yield { delta: part };
+      yield { completion: { content, tokens: Math.ceil(content.length / 4), toolCalls: [] } };
+      return;
+    }
+    const completion = await this.completeWithTools(messages, opts.tools);
+    if (completion.content) for (const part of completion.content.match(/[\s\S]{1,8}/g) ?? []) yield { delta: part };
+    yield { completion };
   }
 }
 
 export function toolCall(name: string, args: unknown, id = `call_${Math.random().toString(36).slice(2, 8)}`): { id: string; name: string; arguments: string } {
   return { id, name, arguments: JSON.stringify(args ?? {}) };
+}
+
+/** Windows can briefly hold a deleted tree while child processes release their cwd. */
+export async function rmRetry(dir: string, attempts = 8): Promise<void> {
+  for (let i = 0; ; i++) {
+    try {
+      await fsp.rm(dir, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      if (i >= attempts - 1) throw err;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
 }

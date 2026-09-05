@@ -39,3 +39,26 @@
 - Tests: +25 (mocked-provider agentic scenarios incl. unknown-tool recovery + budget exhaustion, hooks block/advise/post,
   MCP end-to-end with a test stdio server, config validation, SSE wire format). 83/83, lint + typecheck + build clean.
 - CLI smoke test on real FS: DSL task COMPLETED/review PASS, config.json hook auto-loaded and executed.
+
+## Round 5 — audit remediation (streaming, permissions, chat, context, real-store coverage)
+An independent audit of Round 4 verified the claims (83/83 real, git/docs true) and flagged: `stream()` was dead code,
+the LLM path had never seen a real provider, no PG regression existed, STATE.md counts drifted, and the orchestrator's
+research wiring was indirect. All closed:
+- Streaming end-to-end: provider `stream()` now accumulates `delta.tool_calls` fragments (index-keyed reassembly, tested
+  with split chunks); `AgenticLoopAgent` streams by default and emits transient `model.delta` (fan-out only, never
+  persisted — store/JSONL/replay stay clean); `task run` and the new chat render deltas inline.
+- Permissions: `PermissionGate` in `ToolRegistry.execute` (confirm asks before every call, prompt failure = fail-closed),
+  `PERMISSION_DENIED` is fatal; runtime options `permissionMode`/`onPermissionRequest`.
+- `agentos chat` REPL: goal → agentic task with live streamed transcript; `/tools /tasks /auto /confirm`; Ctrl-C cancels
+  the running task; `chatTurn()` extracted as the testable core; result exposes the model's closing message
+  (`result.finalMessage` via checkpoint).
+- Context management: `AGENTS.md`/`CLAUDE.md`/`AGENTOS.md` injected into the agentic system prompt (capped); automatic
+  compaction past 100 messages (LLM summary of dropped turns, deterministic marker without model, pairing preserved).
+- Researcher report is now explicitly seeded into the agentic conversation (was implicit via checkpoint messages).
+- Real-LLM smoke tier: `npm run test:smoke` (`LLM_SMOKE=1` + key; real provider, real tool calls, offline-skipped).
+- PostgreSQL regression: `tests/integration/pg.test.ts` runs against a live server via `TEST_DATABASE_URL` — verified
+  here on a real PostgreSQL (lifecycle, event replay from a second runtime instance, checkpoint round-trip, dashboard
+  boot path). Skipped with a clear note when the env var is absent.
+- Fixed STATE.md suite-count drift; docs updated (README, ARCHITECTURE, DEVELOPMENT, TODO, FINAL-REPORT addendum).
+- Tests: 101/101 with `TEST_DATABASE_URL` set (unit 61, integration 25, e2e 2, recovery 4, chaos 5, stress 4);
+  lint/typecheck/build clean. Remaining known gaps are documented limitations (OS sandbox, real-token metering).

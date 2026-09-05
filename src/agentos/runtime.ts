@@ -17,6 +17,7 @@ import { resolveSafePath } from "./security";
 import { loadAgentOsConfig, type AgentOsConfig } from "./config";
 import { HookRunner } from "./hooks";
 import { registerMcpTools, type McpClient, type McpRegistration } from "./mcp";
+import type { PermissionMode, PermissionRequest } from "./types";
 
 export type PersistenceKind = "memory" | "file" | "sqlite";
 
@@ -39,6 +40,10 @@ export interface RuntimeOptions {
    * `null` disables config loading entirely.
    */
   config?: AgentOsConfig | null;
+  /** "confirm" requires `onPermissionRequest` approval before every tool execution (interactive sessions). */
+  permissionMode?: PermissionMode;
+  /** Async approval callback used when `permissionMode: "confirm"`. */
+  onPermissionRequest?: (req: PermissionRequest) => Promise<boolean>;
 }
 
 interface RunningEntry {
@@ -187,6 +192,9 @@ export class AgentRuntime {
     if (this.config.hooks && Object.keys(this.config.hooks).length > 0) {
       this.hooks = new HookRunner(this.config.hooks, { rootDir: this.rootDir, bus: this.bus, shell: opts.shell });
       this.tools.setHooks(this.hooks);
+    }
+    if (opts.permissionMode === "confirm" && opts.onPermissionRequest) {
+      this.tools.setPermissionGate({ mode: "confirm", request: opts.onPermissionRequest });
     }
     const pollMs = opts.controlPollMs ?? 500;
     if (pollMs > 0) {

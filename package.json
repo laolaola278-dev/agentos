@@ -14,6 +14,7 @@
     "test:recovery": "tsx --test tests/recovery/*.test.ts",
     "test:stress": "tsx --test tests/stress/*.test.ts",
     "test:chaos": "tsx --test tests/chaos/*.test.ts",
+    "test:smoke": "tsx --test tests/smoke/*.test.ts",
     "test:all": "tsx --test tests/unit/*.test.ts tests/integration/*.test.ts tests/e2e/*.test.ts tests/recovery/*.test.ts tests/chaos/*.test.ts tests/stress/*.test.ts",
     "agentos": "tsx src/agentos/cli.ts",
     "bench": "tsx scripts/bench.ts"

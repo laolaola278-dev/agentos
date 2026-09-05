@@ -9,6 +9,7 @@ import type {
   Diagnosis,
   Message,
   ModelProvider,
+  ModelToolCompletion,
   Plan,
   ReviewIssue,
   ReviewResult,
@@ -447,9 +448,73 @@ Rules:
 - Re-read files you did not write before editing them.
 - When you believe the goal is met, respond with a short summary and NO tool call. The harness will still run independent verification and review.`;
 
+const MAX_COMPACTION_MESSAGES = 100;
+const KEEP_AFTER_COMPACTION = 30;
+
+/** Reads project-level instructions (AGENTS.md / CLAUDE.md / AGENTOS.md) from the workspace, capped. */
+export async function readProjectInstructions(workdir: string, cap = 8000): Promise<string | null> {
+  for (const name of ["AGENTS.md", "CLAUDE.md", "AGENTOS.md"]) {
+    try {
+      const content = await fsp.readFile(path.join(workdir, name), "utf8");
+      const trimmed = content.trim();
+      if (trimmed) return trimmed.length > cap ? `${trimmed.slice(0, cap)}…[truncated]` : trimmed;
+    } catch {
+      // try the next convention
+    }
+  }
+  return null;
+}
+
+/**
+ * Keeps the model conversation bounded: when it grows past `max`, older turns are
+ * replaced by an LLM summary (or a deterministic marker without a model), always
+ * preserving the system message and whole assistant/tool pairs.
+ */
+export async function compactConversation(messages: Message[], model?: { complete: ModelProvider["complete"] } | null, signal?: AbortSignal): Promise<{ messages: Message[]; compacted: boolean; summary?: string }> {
+  if (messages.length <= MAX_COMPACTION_MESSAGES) return { messages, compacted: false };
+  const system = messages.filter((m) => m.role === "system");
+  const rest = messages.filter((m) => m.role !== "system");
+  const dropCount = rest.length - KEEP_AFTER_COMPACTION;
+  // drop whole (assistant tool_calls + following tool results) units from the front
+  let start = 0;
+  let dropped = 0;
+  while (dropped < dropCount && start < rest.length) {
+    const m = rest[start];
+    start++;
+    dropped++;
+    if (m.role === "assistant" && m.toolCalls?.length) {
+      const ids = new Set(m.toolCalls.map((c) => c.id));
+      while (start < rest.length && rest[start].role === "tool" && ids.has(rest[start].toolCallId ?? "")) {
+        start++;
+        dropped++;
+      }
+    }
+  }
+  const droppedMessages = rest.slice(0, start).filter((m) => !(m.role === "tool"));
+  const source = droppedMessages.map((m) => `${m.role}${m.agent ? `(${m.agent})` : ""}: ${m.content.slice(0, 500)}`).join("\n").slice(0, 12_000);
+  let summary = `[context compacted] ${dropped} earlier message(s) omitted.`;
+  if (model && source.trim()) {
+    try {
+      const res = await model.complete(
+        [
+          { role: "system", content: "Summarise the following agent work log into at most 200 words. Focus on: goal, what was done (files touched, commands run), current state, what remains. Plain text only.", ts: nowIso() },
+          { role: "user", content: source, ts: nowIso() },
+        ],
+        { maxTokens: 512, signal },
+      );
+      summary = `[context compacted] Earlier work summary: ${res.content.trim()}`;
+    } catch {
+      // summarisation is best-effort; the deterministic marker still bounds growth
+    }
+  }
+  return { messages: [...system, { role: "user", content: summary, ts: nowIso() }, ...rest.slice(start)], compacted: true, summary };
+}
+
 export interface AgenticInput {
   /** Called after each executed tool call so the orchestrator can checkpoint. */
   onTurn: (result: StepResult) => Promise<void>;
+  /** Researcher report from PLANNING; seeded into the conversation as context. */
+  research?: ResearchReport | null;
 }
 
 export interface AgenticOutput {
@@ -467,13 +532,17 @@ export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
     const { schemas, resolve } = toolSchemasFromRegistry(ctx.tools);
     if (schemas.length === 0) throw new AgentOSError("NO_TOOLS", "agentic mode requires at least one registered tool");
     const goal = ctx.task.spec.goal?.trim() || ctx.task.spec.title;
+    const instructions = await readProjectInstructions(ctx.workdir);
     const conversation: Message[] = [
       {
         role: "system",
-        content: `${AGENTIC_SYSTEM}\n\nWorkspace: ${ctx.workdir}\nGoal: ${goal}`,
+        content: `${AGENTIC_SYSTEM}\n\nWorkspace: ${ctx.workdir}\nGoal: ${goal}${instructions ? `\n\nProject instructions (AGENTS.md):\n${instructions}` : ""}`,
         ts: nowIso(),
       },
     ];
+    if (input.research) {
+      conversation.push({ role: "user", content: `[workspace research] ${JSON.stringify({ ...input.research, files: input.research.files.slice(0, 50) }).slice(0, 4000)}`, ts: nowIso() });
+    }
     // recovery: replay earlier observations so a resumed task keeps its context
     for (const m of ctx.checkpoint.messages.slice(-8)) {
       if (m.role === "system") continue;
@@ -488,9 +557,21 @@ export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
     for (;;) {
       if (ctx.signal.aborted) throw ctx.signal.reason;
       turns++;
-      const completion = await ctx.model.completeWithTools(trimConversation(conversation), schemas, { signal: ctx.signal, maxTokens: 8192 });
+      let completion: ModelToolCompletion | null = null;
+      // streaming path: text deltas fan out live as transient model.delta events
+      if (ctx.model.stream) {
+        for await (const ev of ctx.model.stream(trimConversation(conversation), { tools: schemas, signal: ctx.signal, maxTokens: 8192 })) {
+          if (ev.delta) {
+            await ctx.bus.emit({ taskId: ctx.task.id, agentId: "executor", type: "model.delta", transient: true, data: { turn: turns, text: ev.delta } });
+          }
+          if (ev.completion) completion = ev.completion;
+        }
+        if (!completion) throw new AgentOSError("MODEL_EMPTY_RESPONSE", "model stream ended without a completion", { retryable: true });
+      } else {
+        completion = await ctx.model.completeWithTools(trimConversation(conversation), schemas, { signal: ctx.signal, maxTokens: 8192 });
+      }
       ctx.budget.consumeTokens(completion.tokens);
-      await ctx.bus.emit({ taskId: ctx.task.id, agentId: "executor", type: "model.completed", data: { agent: "executor", tokens: completion.tokens, provider: ctx.model.name, turn: turns, toolCalls: completion.toolCalls.length } });
+      await ctx.bus.emit({ taskId: ctx.task.id, agentId: "executor", type: "model.completed", data: { agent: "executor", tokens: completion.tokens, provider: ctx.model.name, turn: turns, toolCalls: completion.toolCalls.length, streamed: !!ctx.model.stream } });
       if (!completion.toolCalls.length) {
         finalMessage = completion.content.trim();
         pushMessage(ctx, "assistant", `agentic final (turn ${turns}): ${finalMessage.slice(0, 2000)}`, "executor");
@@ -538,6 +619,13 @@ export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
         conversation.push({ role: "tool", toolCallId: call.id, name: call.name, content: result.ok ? summariseForModel(result.output!) : `ERROR: ${result.error}`, ts: nowIso() });
         pushMessage(ctx, "tool", `${result.stepId} ${result.tool}.${result.action} -> ${result.ok ? "ok" : `FAILED ${result.error}`}`, "executor");
         await input.onTurn(result);
+      }
+      // keep long agentic runs inside the context window
+      const { messages: compacted, compacted: didCompact } = await compactConversation(conversation, ctx.model, ctx.signal);
+      if (didCompact) {
+        conversation.length = 0;
+        conversation.push(...compacted);
+        await ctx.bus.emit({ taskId: ctx.task.id, agentId: "executor", type: "model.context_compacted", data: { turn: turns, messages: conversation.length } });
       }
     }
     return { finalMessage, turns, toolCalls, results };
@@ -719,7 +807,7 @@ export type Failure =
   | { kind: "error"; error: unknown };
 
 const TRANSIENT_CODES = new Set(["TIMEOUT", "BUSY", "NETWORK_ERROR", "EAGAIN", "EBUSY", "ETIMEDOUT", "ECONNRESET", "TOO_MANY_PROCESSES", "MODEL_ERROR", "MODEL_HTTP_ERROR"]);
-const FATAL_CODES = new Set(["BUDGET_EXCEEDED", "DANGEROUS_COMMAND", "PATH_TRAVERSAL", "BLOCKED_HOST", "PLAN_INVALID", "PLAN_UNAVAILABLE", "PLAN_EMPTY", "UNKNOWN_TOOL", "UNKNOWN_ACTION", "MISSING_ARGUMENT", "INVALID_ARGUMENT", "INVALID_PATH", "INVALID_COMMAND", "HOOK_BLOCKED", "MODEL_REQUIRED"]);
+const FATAL_CODES = new Set(["BUDGET_EXCEEDED", "DANGEROUS_COMMAND", "PATH_TRAVERSAL", "BLOCKED_HOST", "PLAN_INVALID", "PLAN_UNAVAILABLE", "PLAN_EMPTY", "UNKNOWN_TOOL", "UNKNOWN_ACTION", "MISSING_ARGUMENT", "INVALID_ARGUMENT", "INVALID_PATH", "INVALID_COMMAND", "HOOK_BLOCKED", "MODEL_REQUIRED", "PERMISSION_DENIED"]);
 
 export class DebuggerAgent implements Agent<Failure, Diagnosis> {
   role: AgentRole = "debugger";

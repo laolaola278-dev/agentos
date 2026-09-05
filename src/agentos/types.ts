@@ -161,6 +161,8 @@ export interface TaskResult {
   review?: ReviewResult;
   diagnosis?: Diagnosis;
   summary: string;
+  /** Agentic mode: the model's closing message when it stopped calling tools. */
+  finalMessage?: string;
 }
 
 // ---- Tools -------------------------------------------------------------
@@ -239,6 +241,11 @@ export interface AgentEvent {
   durationMs?: number | null;
   error?: string | null;
   data?: Record<string, unknown>;
+  /**
+   * Transient events (e.g. `model.delta` token streams) fan out to live
+   * subscribers but are never persisted — they would flood stores and logs.
+   */
+  transient?: boolean;
 }
 
 export type EventInput = Omit<AgentEvent, "seq" | "ts" | "id"> & { ts?: string };
@@ -293,6 +300,8 @@ export interface Checkpoint {
   usage: TaskUsage;
   progress: number;
   savedAt: string;
+  /** Agentic mode: the model's closing message (no more tool calls). */
+  finalMessage?: string;
 }
 
 // ---- Verification -----------------------------------------------------
@@ -398,11 +407,25 @@ export interface ModelProvider {
    * Optional: harnesses fall back to JSON-mode `complete()` when absent.
    */
   completeWithTools?(messages: Message[], tools: ToolSchema[], opts?: { maxTokens?: number; signal?: AbortSignal }): Promise<ModelToolCompletion>;
-  /** Optional SSE streaming; yields text deltas and a final completion. */
-  stream?(messages: Message[], opts?: { maxTokens?: number; signal?: AbortSignal }): AsyncIterable<ModelStreamEvent>;
+  /**
+   * Optional SSE streaming; yields text deltas and a final completion.
+   * When `tools` is provided the provider streams with tool calling enabled and
+   * returns the accumulated tool calls in the final completion.
+   */
+  stream?(messages: Message[], opts?: { tools?: ToolSchema[]; maxTokens?: number; signal?: AbortSignal }): AsyncIterable<ModelStreamEvent>;
 }
 
 // ---- Errors -----------------------------------------------------------
+
+/** Interactive sessions can require human approval before risky tool calls. */
+export type PermissionMode = "auto" | "confirm";
+
+export interface PermissionRequest {
+  taskId: string;
+  tool: string;
+  action: string;
+  args: Record<string, unknown>;
+}
 
 export class AgentOSError extends Error {
   code: string;

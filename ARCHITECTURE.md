@@ -41,6 +41,7 @@
 | `config.ts` | `.agentos/config.json` schema + validation: lifecycle hooks and MCP servers |
 | `hooks.ts` | `HookRunner`: runs `pre_tool_call` / `post_tool_call` / `task_completed` / `task_failed` hooks (Claude Code semantics: exit 2 blocks); payload via stdin, redacted |
 | `mcp.ts` | Minimal MCP stdio client (JSON-RPC over newline-delimited stdio): initialize → tools/list → tools/call; registers each MCP tool as a registry tool `mcp_<server>_<tool>` |
+| `chat.ts` | Interactive REPL (`agentos chat`): goals → agentic tasks with live streamed output, permission prompts, Ctrl-C cancels the running task; `chatTurn()` is the testable core |
 | `cli.ts` | Command line interface |
 | `server.ts` | Next.js server singleton (PG persistence, auto-recover, daemon) |
 
@@ -66,9 +67,18 @@ Budget violations are terminal (never retried).
   deterministically with retries.
 - **agentic** (`spec.mode: "agentic"`, requires an LLM with native tool calling): the model drives the tool registry in a
   loop — it proposes one or more tool calls per turn, each call is executed through the same registry (budgets, hooks,
-  checkpoints) and the structured result is fed back, until the model answers without tool calls. The conversation is
-  trimmed to whole tool-call turns so provider pairing rules stay intact; `PLANNING` emits an empty marker plan and the
-  transcript lands in `completedSteps`, so verification, reviewer, debugger and recovery behave exactly as in plan mode.
+  permission gate, checkpoints) and the structured result is fed back, until the model answers without tool calls. The
+  conversation is trimmed to whole tool-call turns so provider pairing rules stay intact; `PLANNING` emits an empty marker
+  plan and the transcript lands in `completedSteps`, so verification, reviewer, debugger and recovery behave exactly as in
+  plan mode. Model text streams out as transient `model.delta` events; `AGENTS.md` instructions are injected; conversations
+  past 100 messages are compacted (LLM summary of dropped turns).
+
+### Permissions
+
+`AgentRuntime` accepts `permissionMode: "confirm"` + `onPermissionRequest`. In confirm mode `ToolRegistry.execute` asks
+the callback before every execution; a refusal (or a failed prompt) yields `PERMISSION_DENIED`, a fatal step error.
+`auto` mode (default, batch/CI) never prompts. Hooks run after the human decision, so a `pre_tool_call` hook can still
+block what the user allowed.
 
 ## Checkpoint / recovery
 
@@ -90,8 +100,10 @@ branch is kept for inspection).
 `task.created|queued|started|resumed|planned|executing|verifying|fixing|reviewing|diagnosing|retrying|paused|cancelled|blocked|completed|failed|recovering|control`,
 `agent.started|completed|failed|tool_call|retry`, `tool.started|completed|failed`, `test.started|passed|failed`,
 `review.check_passed|check_failed|git_state|completed`, `task.diagnosed`, `checkpoint.saved`, `workspace.isolated`,
-`integrator.committed|merged|conflict`, `model.completed`, `hook.executed`, `mcp.registered|failed`, `acceptance.passed|failed`.
+`integrator.committed|merged|conflict`, `model.completed`, `model.delta` (transient, never persisted),
+`model.context_compacted`, `hook.executed`, `mcp.registered|failed`, `acceptance.passed|failed`.
 Every event carries `ts, seq, taskId, agentId, type, tool, args, result, durationMs, error, data` (args/result/data redacted).
+Transient events fan out to live subscribers only — stores, JSONL mirror and replay stay clean.
 
 ## Extensions (`.agentos/config.json`)
 

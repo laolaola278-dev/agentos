@@ -30,3 +30,12 @@
     [x] Task 8.5 MCP: stdio client, tools registered at runtime start, down-server resilience
     [x] Task 8.6 Lazy PostgreSQL client (next build works without DATABASE_URL) + restored .env.example
     [x] Task 8.7 Mocked-provider tests: planner-free agentic scenarios, hooks, MCP server, SSE wire format (83 tests total)
+[x] Phase 9 Audit remediation (independent audit found dead streaming path, doc drift, missing real-store coverage)
+    [x] Task 9.1 stream() wired end-to-end: tool-call fragment reassembly in the provider, agentic loop streams,
+        transient model.delta events (never persisted), task run + chat render deltas inline
+    [x] Task 9.2 Permission gate: confirm/auto modes, PERMISSION_DENIED fatal code, runtime options, chat wiring
+    [x] Task 9.3 `agentos chat` interactive REPL (streamed output, /tools /tasks /auto /confirm, Ctrl-C cancels task)
+    [x] Task 9.4 Context management: AGENTS.md/CLAUDE.md/AGENTOS.md instructions injected; compaction past 100 messages
+    [x] Task 9.5 Real-LLM smoke tier (test:smoke, skipped without LLM_SMOKE=1) + researcher report seeded into agentic conversation
+    [x] Task 9.6 PostgreSQL regression suite against a live server (TEST_DATABASE_URL; dashboard boot path, checkpoint round-trip)
+    [x] Task 9.7 Fixed STATE.md suite-count drift (83 total but wrong distribution)

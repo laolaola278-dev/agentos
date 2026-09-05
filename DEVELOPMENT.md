@@ -39,5 +39,12 @@ Implement `Agent<I, O>` in `agents.ts`, run it via `runAgent()` (emits `agent.*`
   registry tool with a single `call` action (`mcp_<server>_<tool>`). Failures emit `mcp.failed` and are non-fatal.
 - **Agentic mode**: `spec.mode: "agentic"` runs `AgenticLoopAgent` (agents.ts) instead of the step executor. Keep the
   invariants: per-tool-call checkpoints, budgets consumed through `BudgetGuard`, verification + reviewer untouched.
-- **Mocked LLM**: `MockModelProvider` (tests/helpers.ts) scripts `completeWithTools` turns; use it for model-driven
-  tests so the suite stays offline and deterministic.
+  The loop streams (`model.stream` with tools) and emits transient `model.delta` events; compaction kicks in past 100
+  messages; `AGENTS.md`/`CLAUDE.md`/`AGENTOS.md` from the workdir are injected as project instructions.
+- **Permissions**: `permissionMode: "confirm"` + `onPermissionRequest` on the runtime; the gate sits in
+  `ToolRegistry.execute` before hooks; `PERMISSION_DENIED` is a fatal code.
+- **Chat**: `chat.ts` — `chatTurn(rt, text, handlers, opts)` is the testable unit; `runChat` only owns the readline loop.
+- **Mocked LLM**: `MockModelProvider` (tests/helpers.ts) scripts both `completeWithTools` and streaming `stream` turns;
+  use it for model-driven tests so the suite stays offline and deterministic.
+- **Optional tiers**: `test:smoke` needs `LLM_SMOKE=1` + `LLM_API_KEY`; the PG suite needs `TEST_DATABASE_URL`
+  (points at an empty disposable database).

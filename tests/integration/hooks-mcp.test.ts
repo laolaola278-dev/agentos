@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { AgentRuntime } from "@/agentos/runtime";
-import { tmpDir, makeRuntime } from "../helpers";
+import { tmpDir, makeRuntime, rmRetry } from "../helpers";
 import type { AgentOsConfig } from "@/agentos/config";
 
 const MCP_SERVER_JS = `const readline = require("readline");
@@ -87,19 +87,6 @@ test("non-blocking hook failures and post/task hooks fire without breaking the r
     await cleanup();
   }
 });
-
-/** Windows can briefly hold a deleted tree while child processes release their cwd. */
-async function rmRetry(dir: string, attempts = 8): Promise<void> {
-  for (let i = 0; ; i++) {
-    try {
-      await fsp.rm(dir, { recursive: true, force: true });
-      return;
-    } catch (err) {
-      if (i >= attempts - 1) throw err;
-      await new Promise((r) => setTimeout(r, 250));
-    }
-  }
-}
 
 test("MCP server tools join the registry and are usable from tasks", async () => {
   const dir = await tmpDir("agentos-mcp-");

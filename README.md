@@ -21,12 +21,39 @@ registry directly: it proposes tool calls each turn, observes the structured res
 it declares the goal met. The harness stays in charge — budgets, per-call checkpoints, the verification engine and the
 independent reviewer still gate completion with objective evidence.
 
+Model output streams live: text deltas fan out as transient `model.delta` events (never persisted) and are rendered
+inline by `task run` and `chat`. Long runs are kept inside the context window by automatic compaction (LLM summary of
+older turns, deterministic marker without a model). Project instructions in `AGENTS.md` (or `CLAUDE.md`/`AGENTOS.md`)
+are injected into the agent's system prompt.
+
 ```bash
 export LLM_API_KEY=sk-...        # native tool calling required (OpenAI-compatible API)
 ./bin/agentos.js task run --mode agentic --goal 'add a REST endpoint /health to src/server.ts with a test'
 ```
 
 Works with any OpenAI-compatible endpoint (OpenAI, DeepSeek, GLM, Ollama, vLLM — set `LLM_BASE_URL`/`LLM_MODEL`).
+
+## Interactive session (`agentos chat`)
+
+Type goals in a REPL; the agent works on the current directory with live streamed output:
+
+```bash
+./bin/agentos.js chat            # confirm mode: every tool call asks (y/N)
+./bin/agentos.js chat --auto     # no prompts (policy + hooks still apply)
+```
+
+REPL commands: `/tools`, `/tasks`, `/auto`, `/confirm`, `/help`, `/exit`. Ctrl-C cancels the running task; without an
+`LLM_API_KEY` chat explains what to set.
+
+## Permissions
+
+Interactive sessions default to **confirm mode**: every tool execution first asks the user. Denials surface as
+`PERMISSION_DENIED` (a fatal error for the step; the task then fails like any other policy violation). Embeddings can
+wire their own approval UI through runtime options:
+
+```ts
+const rt = await AgentRuntime.create({ permissionMode: "confirm", onPermissionRequest: async (req) => approve(req) });
+```
 
 ## Hooks (`.agentos/config.json`)
 
@@ -140,9 +167,19 @@ npm run test:e2e         # CLI end-to-end
 npm run test:recovery    # SIGKILL mid-task → restart → resume
 npm run test:stress      # hundreds of tasks, thousands of events, concurrent tool calls
 npm run test:chaos       # failing store, tool crashes, deleted workdir, partial writes
-npm run test:all
+npm run test:all         # everything above
 npm run lint && npm run typecheck && npm run build
 npm run bench            # regenerates BENCHMARK.md
+```
+
+Optional tiers (skipped when the environment is absent):
+
+```bash
+# real-LLM smoke: exercises the agentic loop against a live OpenAI-compatible provider
+LLM_SMOKE=1 LLM_API_KEY=sk-... npm run test:smoke
+
+# PostgreSQL regression (dashboard path) against a disposable database
+TEST_DATABASE_URL=postgresql://postgres:pw@127.0.0.1:5432/agentos_test npm run test:integration
 ```
 
 ## Documents

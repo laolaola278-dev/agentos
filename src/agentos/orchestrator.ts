@@ -142,6 +142,7 @@ export class Orchestrator {
 
     let pendingFailure: Failure | null = null;
     let lastDiagnosis: Diagnosis | undefined = cp.diagnosis;
+    let research: ResearchReport | null = null;
 
     const throwIfAborted = () => {
       if (opts.signal.aborted) throw new AbortedError(opts.signal.reason === "cancel" ? "cancel" : "pause");
@@ -193,11 +194,10 @@ export class Orchestrator {
         budget.checkDeadline();
         switch (cp.phase) {
           case "PLANNING": {
-            let research: ResearchReport | null = null;
             if (task.spec.mode === "agentic") {
               if (!this.model?.completeWithTools) throw new AgentOSError("MODEL_REQUIRED", "mode=agentic requires a model provider with native tool calling (set LLM_API_KEY)");
-              // the researcher's workspace report lands in the checkpoint messages, which seed the agentic conversation
-              await runAgent(researcher, ctx(), undefined);
+              // the researcher's report seeds the agentic conversation with workspace context
+              research = (await runAgent(researcher, ctx(), undefined)).output;
               cp.plan = { steps: [], rationale: "agentic mode: the model drives tool calls directly; verification and review still gate completion", source: "model" };
               await bus.emit({ taskId: task.id, agentId: null, type: "task.planned", data: { source: "agentic", steps: 0, rationale: cp.plan.rationale } });
               await save();
@@ -213,7 +213,8 @@ export class Orchestrator {
             if (task.spec.mode === "agentic") {
               const agentic = new AgenticLoopAgent();
               let turns = 0;
-              await runAgent(agentic, ctx(), {
+              const { output } = await runAgent(agentic, ctx(), {
+                research,
                 onTurn: async (r) => {
                   turns++;
                   cp.completedSteps.push(r);
@@ -221,6 +222,8 @@ export class Orchestrator {
                   await save();
                 },
               });
+              cp.finalMessage = output.finalMessage;
+              await save();
               await setPhase("VERIFYING");
               break;
             }
@@ -375,7 +378,7 @@ export class Orchestrator {
   }
 
   private buildResult(cp: Checkpoint, diagnosis: Diagnosis | undefined, summary: string) {
-    return { plan: cp.plan, stepResults: cp.completedSteps, verification: cp.verification, acceptance: cp.acceptance ?? [], review: cp.review, diagnosis, summary };
+    return { plan: cp.plan, stepResults: cp.completedSteps, verification: cp.verification, acceptance: cp.acceptance ?? [], review: cp.review, diagnosis, summary, ...(cp.finalMessage ? { finalMessage: cp.finalMessage } : {}) };
   }
 
   private async writeFailureAnalysis(task: Task, cp: Checkpoint, d: Diagnosis): Promise<void> {

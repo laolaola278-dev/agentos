@@ -63,6 +63,12 @@ export class EventBus {
       error: input.error ? (redactSecrets(input.error) as string) : input.error,
       data: input.data === undefined ? undefined : redactSecrets(input.data),
     };
+    // Transient events (model token deltas) fan out live but never touch stores —
+    // persisting one event per token would flood SQLite/PG/JSONL and the timeline.
+    if (input.transient) {
+      this.dispatch(event);
+      return event;
+    }
     let stored = event;
     if (this.pending.length > 0) await this.flushPendingSerial();
     try {
