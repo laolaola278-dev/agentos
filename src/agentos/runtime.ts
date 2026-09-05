@@ -14,8 +14,9 @@ import { AGENT_CATALOG } from "./agents";
 import { getGitState } from "./tools/git";
 import { resolveSafePath } from "./security";
 import { loadAgentOsConfig, type AgentOsConfig } from "./config";
+import type { AgenticConfig } from "./config";
 import { HookRunner } from "./hooks";
-import { registerMcpTools, type McpClient, type McpRegistration } from "./mcp";
+import { registerMcpTools, type McpClientLike, type McpRegistration } from "./mcp";
 import type { PermissionMode, PermissionRequest } from "./types";
 import { loadVault, type SecretVault } from "./secrets";
 import { normalizeSandboxConfig, type SandboxConfig } from "./sandbox";
@@ -50,6 +51,8 @@ export interface RuntimeOptions {
   onPermissionRequest?: (req: PermissionRequest) => Promise<boolean>;
   /** Sandbox tier for shell commands. `undefined` resolves from config/env, `false` disables. */
   sandbox?: SandboxConfig | false;
+  /** Register the isolated sub-agent tool (default true). */
+  subagent?: boolean;
   /** Secret vault. `undefined` loads `<dataDir>/secrets.json` when present; `false`/`null` disable. */
   secrets?: SecretVault | null | false;
 }
@@ -173,6 +176,7 @@ export class AgentRuntime {
   readonly config: AgentOsConfig;
   readonly secrets: SecretVault | null;
   readonly sandbox: SandboxConfig;
+  readonly agentic: Required<AgenticConfig>;
   /** Loaded user skills (.agentos/skills/*.md) injected into agentic prompts. */
   readonly skills: Skill[] = [];
   /** Scoped API-key authorizer; null when no apikeys.json exists (auth disabled). */
@@ -180,7 +184,7 @@ export class AgentRuntime {
   apiKeyStore: ApiKeyStore | null = null;
   /** Resolved provider settings (profile, key source) for introspection — never the key value. */
   providerSettings: ResolvedProviderSettings | null = null;
-  readonly mcpClients = new Map<string, McpClient>();
+  readonly mcpClients = new Map<string, McpClientLike>();
   mcpRegistrations: McpRegistration[] = [];
   private hooks: HookRunner | null = null;
   private orchestrator: Orchestrator;
@@ -201,12 +205,16 @@ export class AgentRuntime {
     this.config = opts.config ?? {};
     this.secrets = opts.secrets === false || opts.secrets === null ? null : opts.secrets ?? null;
     this.sandbox = normalizeSandboxConfig(opts.sandbox === false ? undefined : opts.sandbox);
+    this.agentic = { parallelToolCalls: this.config.agentic?.parallelToolCalls ?? true, maxParallel: this.config.agentic?.maxParallel ?? 4 };
     const created = createDefaultToolRegistry({ allowDangerous: opts.allowDangerousCommands, shell: opts.shell, sandbox: this.sandbox.mode !== "none" ? this.sandbox : undefined });
     this.tools = opts.tools ?? created.registry;
     this.processes = created.processes;
+    if (this.config.permissions) {
+      this.tools.setPermissionPolicy(this.config.permissions);
+    }
     this.concurrency = Math.max(1, opts.concurrency ?? 2);
     this.defaultBudget = { ...DEFAULT_BUDGET, ...(opts.defaultBudget ?? {}) };
-    this.orchestrator = new Orchestrator({ persistence, bus: this.bus, tools: this.tools, verification: this.verification, model: this.model, dataDir: this.dataDir, heartbeatMs: opts.heartbeatMs, shell: opts.shell, skills: this.skills });
+    this.orchestrator = new Orchestrator({ persistence, bus: this.bus, tools: this.tools, verification: this.verification, model: this.model, dataDir: this.dataDir, heartbeatMs: opts.heartbeatMs, shell: opts.shell, skills: this.skills, agentic: this.agentic });
     this.metrics.attach(this.bus);
     if (this.sandbox.mode !== "none") this.verification.setSandbox(this.sandbox);
     if (this.config.hooks && Object.keys(this.config.hooks).length > 0) {
@@ -246,6 +254,24 @@ export class AgentRuntime {
     }
     const rt = new AgentRuntime({ ...opts, rootDir, dataDir, config, secrets: vault, sandbox, model }, persistence);
     rt.providerSettings = providerSettings;
+    // isolated sub-agent delegation (Claude Code Task-style); the child registry is
+    // built fresh per run WITHOUT the subagent tool, so recursion is impossible
+    if (opts.subagent !== false && !rt.tools.has("subagent")) {
+      const { SubagentTool } = await import("./tools/subagent");
+      const childRegistry = () =>
+        createDefaultToolRegistry({ allowDangerous: opts.allowDangerousCommands, shell: opts.shell, sandbox: rt.sandbox.mode !== "none" ? rt.sandbox : undefined }).registry;
+      rt.tools.register(
+        new SubagentTool({
+          model: rt.model,
+          rootDir: rt.rootDir,
+          dataDir: rt.dataDir,
+          sandbox: rt.sandbox.mode !== "none" ? rt.sandbox : undefined,
+          shell: opts.shell,
+          allowDangerous: opts.allowDangerousCommands,
+          childRegistry,
+        }),
+      );
+    }
     const apiKeyStore = await loadApiKeyStore(dataDir);
     rt.apiKeyStore = apiKeyStore;
     rt.auth = apiKeyStore

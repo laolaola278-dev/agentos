@@ -46,9 +46,11 @@
 | `secrets.ts` | Encrypted local vault (`.agentos/secrets.json`, AES-256-GCM; master key in `.agentos/secret.key` 0600 or `AGENTOS_SECRET_KEY`); CLI `agentos secrets`; names only in diagnostics |
 | `providers.ts` | Provider profiles (openai / github-models / deepseek / glm / ollama / custom reverse proxy): baseUrl, model, key env names, compatibility quirks (tool-call streaming, JSON mode, maxTokens, maxTokensField); key resolution config.llm.apiKeySecret → env → vault; a 400 naming the completion-limit field auto-flips max_tokens ↔ max_completion_tokens |
 | `context.ts` | Context engineering (E1): `cleanToolResult` (head+tail strings, sliced arrays, stripped keys) shapes what the MODEL sees; `NotesStore` external memory per task survives compaction; `contextBudgetReport` |
+| `repomap.ts` | Workspace repo-map (Aider-style, heuristic v1): per-language symbol extraction (TS/JS/Python/Go/Rust), dependency-dir skipping, symbol-density ranking, char budget; injected into agentic system prompts and researcher reports |
 | `skills.ts` | Skill library (E5): `.agentos/skills/*.md` loaded with frontmatter; injection-pattern scan REJECTS hostile skills (RCE pipes, instruction overrides, persona hijacks, secret-shaped tokens) with reasons; capped prompt section |
 | `auth.ts` | Scoped API keys: SHA-256 hashed storage (plaintext shown once), scopes tasks:read/write/admin, per-key token bucket, `loadApiKeyStore` gates enforcement on the first created key |
-| `evals.ts` | Eval loop (E3): suites of tasks with objective verifiers, deterministic scorer (status + acceptance + counters), persisted reports, mechanical variant comparison (regressions named) |
+| `evals.ts` | Eval loop (E3): suites of tasks with objective verifiers, deterministic scorer (status + acceptance + counters), persisted reports, mechanical variant comparison (regressions named); built-in `core` preset suite |
+| `tools/subagent.ts` | Isolated sub-agent delegation (Claude Code Task-style): child runtime with fresh conversation/memory, registry WITHOUT subagent (no recursion), parent sees a capped structured result only; optional per-subagent instructions |
 | `cli.ts` | Command line interface |
 | `server.ts` | Next.js server singleton (PG persistence, auto-recover, daemon) |
 

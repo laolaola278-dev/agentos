@@ -198,6 +198,104 @@ test("agentic mode repairs malformed tool-call JSON instead of failing the call"
   }
 });
 
+test("agentic mode executes a turn's multiple tool calls in parallel", async () => {
+  const provider = new MockModelProvider({
+    turns: [
+      {
+        content: "writing two files",
+        tokens: 5,
+        toolCalls: [
+          toolCall("filesystem__write", { path: "p1.txt", content: "one" }, "call_par1"),
+          toolCall("filesystem__write", { path: "p2.txt", content: "two" }, "call_par2"),
+          toolCall("terminal__execute", { command: "sleep 0.5" }, "call_par3"),
+        ],
+      },
+      { content: "both files written in parallel", tokens: 5, toolCalls: [] },
+    ],
+  });
+  const { rt, dir, cleanup } = await makeRuntime({ model: provider });
+  try {
+    const task = await rt.createTask({
+      title: "parallel calls",
+      goal: "write p1.txt and p2.txt",
+      mode: "agentic",
+      acceptance: [
+        { type: "file_contains", path: "p1.txt", text: "one" },
+        { type: "file_contains", path: "p2.txt", text: "two" },
+      ],
+    });
+    const started = Date.now();
+    await rt.startTask(task.id);
+    const done = await rt.waitForTask(task.id);
+    const elapsed = Date.now() - started;
+    assert.equal(done.status, "COMPLETED", done.error);
+    assert.equal(await fsp.readFile(path.join(dir, "p1.txt"), "utf8"), "one");
+    assert.equal(await fsp.readFile(path.join(dir, "p2.txt"), "utf8"), "two");
+    // three calls, one being sleep 0.5: sequential would exceed 1.5s on process
+    // spawn alone; parallel finishes well under that. Generous bound keeps it stable.
+    assert.ok(elapsed < 4000, `parallel turn should be quick, took ${elapsed}ms`);
+    assert.equal(done.result?.stepResults.length, 3, "all three calls recorded");
+    // model-order pairing preserved: results are in the order the model emitted them
+    assert.match(done.result!.stepResults[0].stepId, /call_par1/);
+    assert.match(done.result!.stepResults[2].stepId, /call_par3/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("agentic mode delegates to isolated subagents via the subagent tool", async () => {
+  const provider = new MockModelProvider({
+    turns: [
+      {
+        content: "delegating",
+        tokens: 5,
+        toolCalls: [
+          toolCall("subagent__run", {
+            goal: "write child.txt",
+            mode: "plan",
+            steps: [{ id: "s1", tool: "filesystem", action: "write", args: { path: "child.txt", content: "from-child" } }],
+            acceptance: [{ type: "file_exists", path: "child.txt" }],
+          }),
+        ],
+      },
+      { content: "subagent finished the isolated write", tokens: 5, toolCalls: [] },
+    ],
+  });
+  const { rt, dir, cleanup } = await makeRuntime({ model: provider });
+  try {
+    assert.ok(rt.tools.get("subagent"), "subagent tool registered by default");
+    const task = await rt.createTask({
+      title: "delegate",
+      goal: "produce child.txt via a subagent",
+      mode: "agentic",
+      acceptance: [{ type: "file_contains", path: "child.txt", text: "from-child" }],
+    });
+    await rt.startTask(task.id);
+    const done = await rt.waitForTask(task.id);
+    assert.equal(done.status, "COMPLETED", done.error);
+    // the child really executed in the parent's workspace
+    assert.equal(await fsp.readFile(path.join(dir, "child.txt"), "utf8"), "from-child");
+    const subStep = done.result?.stepResults.find((r) => r.tool === "subagent");
+    assert.ok(subStep?.ok, "subagent step succeeded");
+    // context isolation: the parent sees a small structured result, not a transcript
+    const data = subStep?.output?.data as { status?: string; summary?: string };
+    assert.equal(data.status, "COMPLETED");
+    assert.match(data.summary ?? "", /filesystem\.write=ok/);
+    assert.ok(JSON.stringify(data).length < 2000, "parent context stays small");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("subagent can be disabled at runtime creation", async () => {
+  const { rt, cleanup } = await makeRuntime({ subagent: false });
+  try {
+    assert.equal(rt.tools.get("subagent"), undefined);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("invalid mode is rejected at task creation", async () => {
   const { rt, cleanup } = await makeRuntime({});
   try {

@@ -150,9 +150,27 @@ agentos eval compare .agentos/evals/baseline-*.json .agentos/evals/variant-a-*.j
 
 An eval case is `{ "id", "title", "goal", "acceptance?", "verification?", "budget?" }` — the scorer uses objective
 evidence only (task status + acceptance + counters), so a variant comparison names regressions and improvements
-mechanically. Context engineering (E1) is built in: tool results are cleaned (head+tail strings, sliced arrays,
-stripped noisy keys) before they enter the model conversation, and each agentic task keeps an external notes file
-(`.agentos/artifacts/<taskId>/notes.md`) that survives conversation compaction.
+mechanically. A built-in offline preset is included: `agentos eval run --preset core`. Context engineering (E1) is
+built in: tool results are cleaned (head+tail strings, sliced arrays, stripped noisy keys) before they enter the model
+conversation, and each agentic task keeps an external notes file (`.agentos/artifacts/<taskId>/notes.md`) that survives
+conversation compaction.
+
+## Agentic capabilities (Claude Code parity set)
+
+- **Parallel tool calls**: a turn's independent tool calls execute with bounded concurrency (default 4);
+  `agentic.parallelToolCalls: false` (or `agentic.maxParallel`) tunes it. Results are re-ordered to model order so
+  provider pairing rules stay intact.
+- **Subagents**: the `subagent` tool delegates self-contained work to an isolated child runtime (fresh context, no
+  parent transcript, no recursive spawning) and returns a capped {status, summary} — the "context firewall" pattern.
+  Optional per-subagent `instructions`. Disable with `subagent: false` in runtime options.
+- **Permission policy**: `config.permissions.allow/deny` patterns (`tool`, `tool.*`, `tool.action`) — deny wins and
+  hides the tool/action from the model's tool list; explicit allow skips confirm prompts; chat `/allow` adds
+  session-scoped allows.
+- **Workspace map**: an Aider-style repo-map (symbol extraction, budget-bounded) is injected into agentic prompts and
+  researcher reports, so the model knows the project's structure before reading files.
+- **Chat session resume**: turns persist to `.agentos/chat-session.json`; `agentos chat --resume` seeds the first turn
+  with prior context. Slash commands come from an extensible registry (`/tools /tasks /allow /history /new /auto
+  /confirm /exit`) and embedders can add their own via `extraCommands`.
 
 ## Hooks (`.agentos/config.json`)
 

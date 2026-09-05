@@ -123,3 +123,28 @@ Picked up the 6-item list the parallel session left mid-flight and closed it, af
 - **E3 evals.ts** — suite format, deterministic scorer, persisted reports, mechanical compare (regressions named);
   `agentos eval run|compare`. CLI smoke: suite of 2 → 1/2 passed with the failing case named; apikeys/skills verified.
 - Tests: +15 (unit + integration); full suite run after this round reported in STATE.md.
+
+## Round 9 — CLI-gap upgrade (implement → test → compare against the corresponding CLI, per item)
+Closed the actionable gaps from the detailed CLI comparison, each with a post-implementation comparison pass:
+1. **Parallel tool calls** (vs Claude Code/OpenAI parallel function calling): bounded concurrency (4), model-order
+   result pairing; added `agentic.parallelToolCalls/maxParallel` after the comparison flagged the missing
+   disable_parallel_tool_use knob. [Anthropic parallel-tool-use docs]
+2. **Subagent tool** (vs Claude Code Task/subagents): isolated child runtime — fresh conversation, memory persistence,
+   registry WITHOUT subagent (no recursion) — parent sees capped {status, summary} only; `instructions` arg added after
+   comparison flagged the missing custom-subagent persona. [Claude Code sub-agents docs]
+3. **repo-map** (vs Aider tree-sitter): heuristic v1 symbol extraction (TS/JS/Py/Go/Rust), budget-bounded, injected into
+   agentic prompts + researcher; regex limitation documented. [Aider repo-map analyses]
+4. **Permission policy table** (vs Claude Code permissions): config allow/deny patterns, deny wins, explicit allow
+   skips prompts, bare-tool deny hides schemas from the model (comparison flagged the difference); chat /allow.
+   [Claude Code permissions docs]
+5. **Sandbox hardening** (vs Codex Landlock/seccomp/bwrap): CPU-seconds cap, injectable platform, container read-only
+   rootfs. Kernel-level FS/syscall isolation on par with Codex remains out of reach without native bindings — documented
+   limitation; container tier is the strong-isolation path. [Codex sandbox analysis]
+6. **Chat session persistence + resume + slash registry** (vs Claude Code --resume / slash commands): session file with
+   turn summaries seeded into the first resumed turn; extensible slash registry (/help lists them); /history, /new.
+   Transcript-level resume deliberately lighter (token budget). [Claude Code commands docs]
+7. **Built-in eval preset** (vs Terminal-Bench task structure): `core` suite, 6 deterministic offline cases, all green
+   twice in a row (determinism check).
+8. **MCP Streamable HTTP transport** (vs MCP spec 2025-03-26+): POST JSON-RPC, JSON+SSE response parsing,
+   Mcp-Session-Id carry-forward, custom headers, graceful mcp.failed on misconfig. Spec gaps left open: 404 session
+   re-initialize, GET server-initiated stream, DELETE termination. [MCP transport spec]

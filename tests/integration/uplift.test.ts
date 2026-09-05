@@ -93,3 +93,21 @@ test("eval suite runs real tasks and reports compare mechanically", async () => 
     await cleanup();
   }
 });
+
+test("built-in core eval preset runs fully green and deterministically", async () => {
+  const { rt, cleanup } = await makeRuntime({});
+  try {
+    const { getPresetSuite, runEvalSuite } = await import("@/agentos/evals");
+    const suite = getPresetSuite("core");
+    assert.equal(suite.cases.length, 6);
+    const report = await runEvalSuite(rt, suite, "preset-core");
+    assert.equal(report.total, 6);
+    assert.equal(report.passed, 6, `all preset cases pass: ${report.results.filter((r) => !r.passed).map((r) => `${r.id}: ${r.detail}`).join(" | ")}`);
+    // determinism: a second run scores identically
+    const again = await runEvalSuite(rt, suite, "preset-core-2");
+    assert.equal(again.passed, 6);
+    assert.deepEqual(again.results.map((r) => [r.id, r.passed]), report.results.map((r) => [r.id, r.passed]));
+  } finally {
+    await cleanup();
+  }
+});

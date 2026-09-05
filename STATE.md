@@ -1,17 +1,20 @@
 # STATE
 
-- Phase: 12 — COMPLETE (capability-uplift round: baseline fix, maxTokensField crack, E1 context engineering, E5 skills, scoped API keys, E3 eval loop)
+- Phase: 13 — COMPLETE (CLI-gap upgrade: each gap implemented → tested → compared against the corresponding CLI's docs)
 - Current task: none
-- Completed modules: everything in TODO.md phases 1–12
-  - core runtime, orchestrator (plan + agentic modes), tools, CLI, dashboard, docs
+- Completed modules: everything in TODO.md phases 1–13
+  - core runtime, orchestrator (plan + agentic modes, parallel tool calls), tools + subagent tool, CLI, dashboard, docs
   - model layer: text / native tool-calling / SSE streaming + malformed-argument repair + maxTokensField auto-flip
-  - extensions: lifecycle hooks + MCP servers; sandbox tiers (none/process/container); encrypted secrets vault
-  - provider profiles: openai / github-models / deepseek / glm / ollama / custom reverse proxy with quirk adaptation
-  - interactive: `agentos chat` REPL with confirm permission gate and EOF-safe questions
-  - context engineering (E1): cleanToolResult + external notes surviving compaction + budget report
-  - skills (E5): .agentos/skills loader with injection-pattern rejection + agentos skills CLI
-  - auth: scoped API keys (SHA-256 at rest, token bucket, audit events) enforcing dashboard API routes
-  - eval loop (E3): deterministic scorer, persisted reports, mechanical variant comparison + agentos eval CLI
+  - extensions: lifecycle hooks + MCP servers (stdio + Streamable HTTP) via `.agentos/config.json`
+  - sandbox tiers: none / process (ulimit vmem+pids+cpu, platform-injectable) / container (read-only rootfs, caps)
+  - secrets vault + provider profiles (github-models/deepseek/glm/ollama/custom) with quirk adaptation
+  - interactive: `agentos chat` with confirm gate, permission policy table, session persistence + --resume, slash registry
+  - capability uplift: context engineering (cleanToolResult/notes/budget), skills with injection scan, workspace repo-map,
+    scoped API keys, deterministic eval loop with built-in `core` preset
 - Blockers: none
-- Next: optional — dashboard auth/sandbox UI, subagent context isolation, skill-set curation, real-LLM smoke once a key exists
-- Last test result: `TEST_DATABASE_URL=... npm run test:all` → 142 tests, 141 passed / 0 failed / 1 skipped (container sandbox tier — Docker daemon down on this box); lint clean; typecheck clean; next build OK. Optional tiers: `test:smoke` (real LLM, requires LLM_SMOKE=1 + key), `test:serial` (loaded machines).
+- Next: optional — real-LLM smoke once a key exists; kernel-level sandbox (Landlock/Job Object) behind native bindings;
+  MCP 404-session re-initialize; per-subagent tool allowlists
+- Last test result: `TEST_DATABASE_URL=... npm run test:all` → 156 tests, 155 passed / 0 failed / 1 skipped (container
+  sandbox tier — Docker daemon down on this box); lint clean; typecheck clean; next build OK. Suites: unit 98,
+  integration 42 (incl. real-PG regression + chat REPL + MCP HTTP), e2e 2, recovery 5, chaos 5, stress 4.
+  Optional tiers: `test:smoke` (real LLM, requires LLM_SMOKE=1 + key), `test:serial` (loaded machines).

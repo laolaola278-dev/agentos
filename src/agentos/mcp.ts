@@ -37,12 +37,14 @@ export class McpClient {
   constructor(
     readonly serverName: string,
     private cfg: McpServerConfig,
-  ) {}
+  ) {
+    if (!cfg.command) throw new ToolError("CONFIG_INVALID", `MCP server "${serverName}" transport=stdio requires a command`);
+  }
 
   serverInfo: { name?: string; version?: string; protocolVersion?: string } = {};
 
   private spawnServer(): ChildProcess {
-    const child = spawn(this.cfg.command, this.cfg.args ?? [], {
+    const child = spawn(this.cfg.command as string, this.cfg.args ?? [], {
       cwd: this.cfg.cwd,
       env: buildSafeEnv(this.cfg.env ?? {}) as NodeJS.ProcessEnv,
       stdio: ["pipe", "pipe", "pipe"],
@@ -203,11 +205,11 @@ export interface McpRegistration {
 export async function registerMcpTools(
   registry: ToolRegistry,
   servers: Record<string, McpServerConfig>,
-  opts: { onClient?: (name: string, client: McpClient) => void; connectTimeoutMs?: number } = {},
+  opts: { onClient?: (name: string, client: McpClientLike) => void; connectTimeoutMs?: number } = {},
 ): Promise<McpRegistration[]> {
   const registrations: McpRegistration[] = [];
   for (const [serverName, cfg] of Object.entries(servers)) {
-    const client = new McpClient(serverName, cfg);
+    const client = await clientFor(serverName, cfg);
     try {
       await client.connect(opts.connectTimeoutMs);
       const tools = await client.listTools();
@@ -240,4 +242,114 @@ export async function registerMcpTools(
     }
   }
   return registrations;
+}
+
+/**
+ * Streamable HTTP transport (MCP spec): JSON-RPC over HTTP POST with
+ * `Accept: application/json, text/event-stream` — responses may be plain JSON
+ * or an SSE stream; the `Mcp-Session-Id` response header is carried forward.
+ */
+export class HttpMcpClient {
+  serverInfo: { name?: string; version?: string; protocolVersion?: string } = {};
+  private sessionId: string | null = null;
+  private nextId = 1;
+
+  constructor(
+    readonly serverName: string,
+    private cfg: McpServerConfig & { url: string },
+  ) {}
+
+  private headers(): Record<string, string> {
+    return {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      ...(this.sessionId ? { "mcp-session-id": this.sessionId } : {}),
+      ...(this.cfg.headers ?? {}),
+    };
+  }
+
+  /** Sends one JSON-RPC message; resolves with the parsed body (JSON or first SSE data message). */
+  private async rpc(method: string, params: Record<string, unknown>, opts: { id?: number; timeoutMs: number }): Promise<Record<string, unknown>> {
+    const id = opts.id ?? this.nextId++;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new ToolError("MCP_TIMEOUT", `MCP HTTP request ${method} timed out after ${opts.timeoutMs}ms`, { retryable: true })), opts.timeoutMs);
+    try {
+      const res = await fetch(this.cfg.url, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new ToolError("MCP_HTTP_ERROR", `MCP HTTP ${method} failed: ${res.status}`);
+      const sid = res.headers.get("mcp-session-id");
+      if (sid) this.sessionId = sid;
+      const contentType = res.headers.get("content-type") ?? "";
+      if (contentType.includes("text/event-stream")) {
+        const text = await res.text();
+        for (const line of text.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const payload = trimmed.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          try {
+            const msg = JSON.parse(payload) as Record<string, unknown>;
+            if (msg.id === undefined || msg.id === id) return msg;
+          } catch {
+            continue;
+          }
+        }
+        throw new ToolError("MCP_ERROR", `SSE response contained no reply for ${method}`);
+      }
+      return (await res.json()) as Record<string, unknown>;
+    } catch (err) {
+      if (err instanceof ToolError) throw err;
+      throw new ToolError("MCP_HTTP_ERROR", `MCP HTTP ${method} on "${this.serverName}" failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async connect(timeoutMs?: number): Promise<void> {
+    const t = timeoutMs ?? this.cfg.timeoutMs ?? 30_000;
+    const res = (await this.rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "agentos", version: "1.0.0" } }, { id: this.nextId++, timeoutMs: t })) as {
+      result?: { serverInfo?: { name?: string; version?: string }; protocolVersion?: string };
+      error?: { message?: string };
+    };
+    if (res.error) throw new ToolError("MCP_ERROR", `initialize failed: ${res.error.message ?? "unknown"}`);
+    this.serverInfo = { ...(res.result?.serverInfo ?? {}), protocolVersion: res.result?.protocolVersion };
+    await this.rpc("notifications/initialized", {}, { id: this.nextId++, timeoutMs: t });
+  }
+
+  async listTools(timeoutMs?: number): Promise<McpToolDef[]> {
+    const t = timeoutMs ?? this.cfg.timeoutMs ?? 30_000;
+    const res = (await this.rpc("tools/list", {}, { timeoutMs: t })) as { result?: { tools?: McpToolDef[] } };
+    return (res.result?.tools ?? []).filter((tool) => tool && typeof tool.name === "string");
+  }
+
+  async callTool(name: string, args: Record<string, unknown>, timeoutMs?: number): Promise<{ content: string; isError: boolean }> {
+    const t = timeoutMs ?? this.cfg.timeoutMs ?? 30_000;
+    const res = (await this.rpc("tools/call", { name, arguments: args }, { timeoutMs: t })) as {
+      result?: { content?: { type?: string; text?: string }[]; isError?: boolean };
+      error?: { message?: string };
+    };
+    if (res.error) throw new ToolError("MCP_ERROR", res.error.message ?? "unknown MCP error");
+    const content = (res.result?.content ?? []).filter((c) => !c?.type || c.type === "text").map((c) => c.text ?? "").join("\n");
+    if (res.result?.isError) throw new ToolError("MCP_TOOL_ERROR", content.slice(0, 2000) || `tool ${name} reported an error`);
+    return { content, isError: false };
+  }
+
+  async close(): Promise<void> {
+    this.sessionId = null;
+  }
+}
+
+export type McpClientLike = McpClient | HttpMcpClient;
+
+/** Normalises the two transports behind one call surface. */
+async function clientFor(serverName: string, cfg: McpServerConfig): Promise<McpClientLike> {
+  if (cfg.transport === "http") {
+    if (!cfg.url) throw new ToolError("CONFIG_INVALID", `MCP server "${serverName}" transport=http requires url`);
+    return new HttpMcpClient(serverName, cfg as McpServerConfig & { url: string });
+  }
+  return new McpClient(serverName, cfg);
 }

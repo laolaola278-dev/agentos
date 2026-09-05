@@ -7,6 +7,9 @@ import { loadSkills, skillsPromptSection } from "@/agentos/skills";
 import { ApiKeyStore, ApiKeyAuthorizer, TokenBucket, API_KEY_SCOPES, loadApiKeyStore } from "@/agentos/auth";
 import { parseEvalSuite, scoreCase, compareReports, type EvalRunReport } from "@/agentos/evals";
 import { OpenAICompatibleProvider } from "@/agentos/model";
+import { validateAgentOsConfig } from "@/agentos/config";
+import { ToolRegistry } from "@/agentos/tools/registry";
+import { toolSchemasFromRegistry } from "@/agentos/agents";
 import type { Task } from "@/agentos/types";
 import { tmpDir } from "../helpers";
 
@@ -235,4 +238,75 @@ test("explicit maxTokensField is honoured without a retry round-trip", async () 
   assert.equal(bodies.length, 1);
   assert.equal(bodies[0].max_completion_tokens, 2048);
   assert.equal(bodies[0].max_tokens, undefined);
+});
+
+// ---- per-tool permission policy (Claude Code permissions.allow/deny) ----
+
+test("permission policy: deny wins over allow and blocks without prompting", async () => {
+  const registry = new ToolRegistry().register({
+    name: "probe",
+    description: "test tool",
+    actions: [{ name: "ping", description: "pong", params: {} }],
+    async execute() {
+      return { pong: true };
+    },
+  });
+  let prompts = 0;
+  registry.setPermissionGate({ mode: "confirm", request: async () => (prompts++, true) });
+  registry.setPermissionPolicy({ allow: ["probe.*"], deny: ["probe.ping"] });
+  const out = await registry.execute("probe", { action: "ping", args: {} }, { taskId: "t", agentId: "test", workdir: "." });
+  assert.equal(out.ok, false);
+  assert.equal(out.error?.code, "PERMISSION_DENIED");
+  assert.equal(prompts, 0, "deny rejects without prompting even though allow matched");
+});
+
+test("permission policy: explicit allow skips the confirm prompt", async () => {
+  const registry = new ToolRegistry().register({
+    name: "probe",
+    description: "test tool",
+    actions: [{ name: "ping", description: "pong", params: {} }],
+    async execute() {
+      return { pong: true };
+    },
+  });
+  let prompts = 0;
+  registry.setPermissionGate({ mode: "confirm", request: async () => (prompts++, true) });
+  registry.setPermissionPolicy({ allow: ["probe.ping"], deny: [] });
+  const out = await registry.execute("probe", { action: "ping", args: {} }, { taskId: "t", agentId: "test", workdir: "." });
+  assert.equal(out.ok, true);
+  assert.equal(prompts, 0, "allow-listed call skips the prompt");
+  // session-scoped allow appended at runtime (chat /allow)
+  registry.allowToolPattern("probe.pong");
+  assert.ok(registry.permissionPolicySnapshot.sessionAllow.includes("probe.pong"));
+  // config validation
+  assert.throws(() => validateAgentOsConfig({ permissions: { deny: ["bad pattern!"] } }), /patterns/);
+  const ok = validateAgentOsConfig({ permissions: { allow: ["filesystem.*"], deny: ["terminal.execute"] } });
+  assert.deepEqual(ok.permissions?.deny, ["terminal.execute"]);
+});
+
+test("denied tools/actions are hidden from the model's tool schemas (Claude Code bare-tool semantics)", () => {
+  const registry = new ToolRegistry().register({
+    name: "alpha",
+    description: "alpha tool",
+    actions: [
+      { name: "read", description: "read", params: {} },
+      { name: "write", description: "write", params: {} },
+    ],
+    async execute() {
+      return {};
+    },
+  }).register({
+    name: "beta",
+    description: "beta tool",
+    actions: [{ name: "ping", description: "ping", params: {} }],
+    async execute() {
+      return {};
+    },
+  });
+  registry.setPermissionPolicy({ deny: ["beta", "alpha.write"] });
+  const { schemas, resolve } = toolSchemasFromRegistry(registry);
+  assert.ok(!schemas.some((s) => s.name.startsWith("beta__")), "bare-tool deny removes the tool schema");
+  assert.ok(!schemas.some((s) => s.name === "alpha__write"), "action deny removes that action schema");
+  assert.ok(schemas.some((s) => s.name === "alpha__read"), "other actions stay");
+  assert.equal(resolve("beta__ping"), null);
 });

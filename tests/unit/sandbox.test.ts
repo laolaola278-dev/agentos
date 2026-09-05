@@ -50,6 +50,7 @@ test("planSandboxedCommand container: writes run script, builds docker command, 
     assert.match(plan.command, /--network none/);
     assert.match(plan.command, /--memory 512m/);
     assert.match(plan.command, /--cap-drop ALL/);
+    assert.match(plan.command, /--read-only --tmpfs \/tmp/, "read-only rootfs by default");
     assert.match(plan.command, /alpine:3/);
     assert.match(plan.command, /bash \/workspace\/\.agentos-sandbox\/run-[a-f0-9]+\.sh/);
     const scriptName = plan.command.match(/run-([a-f0-9]+)\.sh/)![1];
@@ -85,4 +86,14 @@ test("dockerDaemonAvailable caches the probe result", async () => {
   assert.equal(await dockerDaemonAvailable(probe), true);
   assert.equal(calls, 1, "probe ran once");
   resetDaemonProbe();
+});
+
+test("process tier: CPU-seconds cap and injectable platform (Codex-style native limits per platform)", async () => {
+  const linux = await planSandboxedCommand("echo hi", { workdir: ".", cfg: { mode: "process", cpuSeconds: 300 }, platform: "linux" });
+  assert.match(linux.command, /^ulimit -t 300/);
+  assert.match(linux.command, /ulimit -v 524288/);
+  const win = await planSandboxedCommand("echo hi", { workdir: ".", cfg: { mode: "process" }, platform: "win32" });
+  assert.equal(win.mode, "none");
+  assert.match(win.note ?? "", /win32/);
+  assert.throws(() => normalizeSandboxConfig({ mode: "none", cpuSeconds: 0 }), /cpuSeconds/);
 });

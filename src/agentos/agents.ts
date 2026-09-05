@@ -30,6 +30,7 @@ import { redactString } from "./security";
 import { getGitState, runGit } from "./tools/git";
 import { cleanToolResult, NotesStore } from "./context";
 import { skillsPromptSection, type Skill } from "./skills";
+import { buildRepoMap } from "./repomap";
 
 // ---------------------------------------------------------------------------
 // Budget guard
@@ -81,6 +82,8 @@ export interface AgentContext {
   shell?: string;
   /** User-authored skills injected into agentic system prompts (E5). */
   skills?: Skill[];
+  /** Agentic loop behaviour (parallel tool calls). */
+  agentic?: Required<import("./config").AgenticConfig>;
 }
 
 export interface Agent<I, O> {
@@ -145,6 +148,8 @@ export interface ResearchReport {
   git: { isRepo: boolean; branch?: string; head?: string; dirty?: boolean };
   suggestedVerification: VerificationSpec[];
   notes: string[];
+  /** Aider-style structural index of the workspace (may be empty). */
+  repoMap: string;
 }
 
 export class ResearcherAgent implements Agent<void, ResearchReport> {
@@ -169,7 +174,13 @@ export class ResearcherAgent implements Agent<void, ResearchReport> {
     for (const [name, kind] of [["test", "unit"], ["lint", "lint"], ["typecheck", "typecheck"], ["build", "build"]] as const) {
       if (packageScripts[name]) suggestedVerification.push({ name, kind, command: `${packageManager ?? "npm"} run ${name}` });
     }
-    const report = { files, packageScripts, packageManager, git, suggestedVerification, notes };
+    let repoMap = "";
+    try {
+      repoMap = (await buildRepoMap(ctx.workdir, { maxChars: 3000 })).map;
+    } catch {
+      // best-effort structural context
+    }
+    const report = { files, packageScripts, packageManager, git, suggestedVerification, notes, repoMap };
     pushMessage(ctx, "tool", `research: ${JSON.stringify({ ...report, files: files.slice(0, 50) })}`, "researcher");
     return report;
   }
@@ -388,8 +399,16 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 export function toolSchemasFromRegistry(registry: ToolRegistry): { schemas: ToolSchema[]; resolve: (name: string) => { tool: string; action: string } | null } {
   const schemas: ToolSchema[] = [];
   const index = new Map<string, { tool: string; action: string }>();
+  // Claude Code semantics: a bare-tool deny removes the tool from the model's
+  // tool list entirely (not just blocks execution); action-level denies hide
+  // that action's schema so the model never wastes a call on it.
+  const policy = registry.permissionPolicySnapshot;
+  const toolDenied = (tool: string) => policy.deny.some((p) => p === tool || p === `${tool}.*`);
+  const actionDenied = (tool: string, action: string) => policy.deny.some((p) => p === `${tool}.${action}`);
   for (const t of registry.list()) {
+    if (toolDenied(t.name)) continue;
     for (const a of t.actions) {
+      if (actionDenied(t.name, a.name)) continue;
       const name = `${t.name}__${a.name}`;
       const properties: Record<string, unknown> = {};
       const required: string[] = [];
@@ -547,10 +566,18 @@ export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
     const notes = new NotesStore(ctx.artifactsDir);
     const notesTail = await notes.read(2000);
     const skillsSection = skillsPromptSection(ctx.skills ?? []);
+    // Aider-style workspace map: a structural index without reading every file
+    let repoMap = "";
+    try {
+      const built = await buildRepoMap(ctx.workdir, { maxChars: 4000 });
+      if (built.map) repoMap = `[workspace map] ${built.filesScanned} file(s), ${built.symbols} symbol(s):\n${built.map}`;
+    } catch {
+      // map is best-effort context, never a failure
+    }
     const conversation: Message[] = [
       {
         role: "system",
-        content: `${AGENTIC_SYSTEM}\n\nWorkspace: ${ctx.workdir}\nGoal: ${goal}${instructions ? `\n\nProject instructions (AGENTS.md):\n${instructions}` : ""}${skillsSection ? `\n\n${skillsSection}` : ""}`,
+        content: `${AGENTIC_SYSTEM}\n\nWorkspace: ${ctx.workdir}\nGoal: ${goal}${instructions ? `\n\nProject instructions (AGENTS.md):\n${instructions}` : ""}${skillsSection ? `\n\n${skillsSection}` : ""}${repoMap ? `\n\n${repoMap}` : ""}`,
         ts: nowIso(),
       },
     ];
@@ -599,7 +626,14 @@ export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
         break;
       }
       conversation.push({ role: "assistant", content: completion.content, toolCalls: completion.toolCalls, ts: nowIso() });
-      for (const call of completion.toolCalls) {
+      // Parallel execution of the turn's independent tool calls (Claude Code /
+      // OpenAI parallel-function-calling style), bounded so a chatty turn cannot
+      // spawn a process storm. Results are placed back in MODEL order so the
+      // assistant tool_calls / tool result pairing stays intact for the provider.
+      const limit = ctx.agentic?.parallelToolCalls === false ? 1 : Math.max(1, Math.min(ctx.agentic?.maxParallel ?? 4, 16));
+      const ordered: { call: (typeof completion.toolCalls)[number]; result: StepResult }[] = new Array(completion.toolCalls.length);
+      const workQueue = completion.toolCalls.map((call, index) => ({ call, index }));
+      const executeCall = async (call: (typeof completion.toolCalls)[number]): Promise<StepResult> => {
         if (ctx.signal.aborted) throw ctx.signal.reason;
         const started = Date.now();
         const target = resolve(call.name);
@@ -616,33 +650,42 @@ export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
             parseError = `invalid JSON arguments: ${err instanceof Error ? err.message : String(err)}`;
           }
         }
-        let result: StepResult;
         if (!target || parseError) {
           const message = !target ? `unknown tool "${call.name}"` : parseError!;
           await ctx.bus.emit({ taskId: ctx.task.id, agentId: "executor", type: "agent.tool_call", tool: call.name, args: { turn: turns, invalid: true }, error: message });
-          result = { stepId: `t${turns}-${call.id}`, tool: call.name, action: "", ok: false, error: message, durationMs: Date.now() - started, attempt: 1, finishedAt: nowIso() };
-        } else {
-          ctx.budget.consumeToolCall();
-          toolCalls++;
-          await ctx.bus.emit({ taskId: ctx.task.id, agentId: "executor", type: "agent.tool_call", tool: target.tool, args: { stepId: result_stepId(turns, call.id), action: target.action, turn: turns, arguments: args }, data: { source: "agentic" } });
-          const output = await ctx.tools.execute(
-            target.tool,
-            { action: target.action, args },
-            { taskId: ctx.task.id, agentId: "executor", workdir: ctx.workdir, signal: ctx.signal, timeoutMs: Math.min(ctx.budget.remainingMs() || 1, 10 * 60_000), bus: ctx.bus, shell: ctx.shell },
-          );
-          result = {
-            stepId: result_stepId(turns, call.id),
-            tool: target.tool,
-            action: target.action,
-            ok: output.ok,
-            output,
-            error: output.ok ? undefined : `${output.error?.code}: ${output.error?.message}`,
-            durationMs: Date.now() - started,
-            attempt: 1,
-            finishedAt: nowIso(),
-          };
+          return { stepId: `t${turns}-${call.id}`, tool: call.name, action: "", ok: false, error: message, durationMs: Date.now() - started, attempt: 1, finishedAt: nowIso() };
         }
+        ctx.budget.consumeToolCall();
+        await ctx.bus.emit({ taskId: ctx.task.id, agentId: "executor", type: "agent.tool_call", tool: target.tool, args: { stepId: result_stepId(turns, call.id), action: target.action, turn: turns, arguments: args }, data: { source: "agentic" } });
+        const output = await ctx.tools.execute(
+          target.tool,
+          { action: target.action, args },
+          { taskId: ctx.task.id, agentId: "executor", workdir: ctx.workdir, signal: ctx.signal, timeoutMs: Math.min(ctx.budget.remainingMs() || 1, 10 * 60_000), bus: ctx.bus, shell: ctx.shell },
+        );
+        return {
+          stepId: result_stepId(turns, call.id),
+          tool: target.tool,
+          action: target.action,
+          ok: output.ok,
+          output,
+          error: output.ok ? undefined : `${output.error?.code}: ${output.error?.message}`,
+          durationMs: Date.now() - started,
+          attempt: 1,
+          finishedAt: nowIso(),
+        };
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(limit, workQueue.length) }, async () => {
+          for (;;) {
+            const next = workQueue.shift();
+            if (!next) return;
+            ordered[next.index] = { call: next.call, result: await executeCall(next.call) };
+          }
+        }),
+      );
+      for (const { call, result } of ordered) {
         results.push(result);
+        if (result.ok) toolCalls++;
         conversation.push({ role: "tool", toolCallId: call.id, name: call.name, content: result.ok ? summariseForModel(result.output!) : `ERROR: ${result.error}`, ts: nowIso() });
         pushMessage(ctx, "tool", `${result.stepId} ${result.tool}.${result.action} -> ${result.ok ? "ok" : `FAILED ${result.error}`}`, "executor");
         await notes.append(`${result.stepId} ${result.tool}.${result.action} -> ${result.ok ? "ok" : `FAILED ${String(result.error).slice(0, 120)}`}`);

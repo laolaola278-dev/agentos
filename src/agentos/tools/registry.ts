@@ -11,6 +11,25 @@ export interface PermissionGate {
   request: (req: PermissionRequest) => Promise<boolean>;
 }
 
+export interface PermissionPolicy {
+  /** `tool`, `tool.*` or `tool.action` patterns always allowed without prompting. */
+  allow: string[];
+  /** Deny patterns win over allow: the call is rejected without prompting. */
+  deny: string[];
+  /** Session-scoped allows appended at runtime (chat `/allow`). */
+  sessionAllow: string[];
+}
+
+/** `*`, `tool`, `tool.*` or `tool.action` matcher shared by hooks and permissions. */
+export function matchToolPattern(pattern: string | undefined, tool: string, action: string): boolean {
+  const m = pattern ?? "*";
+  if (m === "*") return true;
+  const dot = m.indexOf(".");
+  if (dot < 0) return m === tool;
+  const [t, a] = [m.slice(0, dot), m.slice(dot + 1)];
+  return t === tool && (a === "*" || a === action);
+}
+
 export interface ToolDescriptor {
   name: string;
   description: string;
@@ -99,6 +118,7 @@ export class ToolRegistry {
   private tools = new Map<string, Tool>();
   private hooks: HookRunner | null = null;
   private permissionGate: PermissionGate | null = null;
+  private permissionPolicy: PermissionPolicy = { allow: [], deny: [], sessionAllow: [] };
 
   register(tool: Tool): this {
     if (this.tools.has(tool.name)) throw new Error(`tool already registered: ${tool.name}`);
@@ -116,6 +136,23 @@ export class ToolRegistry {
   setPermissionGate(gate: PermissionGate | null): this {
     this.permissionGate = gate;
     return this;
+  }
+
+  /** Sets the allow/deny policy table (Claude Code permissions semantics: deny wins). */
+  setPermissionPolicy(policy: Partial<PermissionPolicy>): this {
+    this.permissionPolicy = { allow: policy.allow ?? [], deny: policy.deny ?? [], sessionAllow: policy.sessionAllow ?? [] };
+    return this;
+  }
+
+  /** Appends a session-scoped allow pattern (chat `/allow tool.action`). */
+  allowToolPattern(pattern: string): this {
+    if (!/^(\*|[a-zA-Z0-9_-]+(\.\*|\.[a-zA-Z0-9_-]+)?)$/.test(pattern)) throw new ToolError("INVALID_ARGUMENT", `invalid permission pattern "${pattern}" (expected "*", "tool" or "tool.action")`);
+    if (!this.permissionPolicy.sessionAllow.includes(pattern)) this.permissionPolicy.sessionAllow.push(pattern);
+    return this;
+  }
+
+  get permissionPolicySnapshot(): PermissionPolicy {
+    return { ...this.permissionPolicy, allow: [...this.permissionPolicy.allow], deny: [...this.permissionPolicy.deny], sessionAllow: [...this.permissionPolicy.sessionAllow] };
   }
 
   get(name: string): Tool | undefined {
@@ -165,8 +202,18 @@ export class ToolRegistry {
       return output;
     }
 
+    // permission policy (config `permissions.allow/deny`): deny wins over allow,
+    // an explicit allow skips the interactive confirm gate entirely
+    const policy = this.permissionPolicy;
+    if (policy.deny.some((p) => matchToolPattern(p, toolName, input.action))) {
+      const output = finish({ ok: false, error: { code: "PERMISSION_DENIED", message: `${toolName}.${input.action} is denied by the permission policy`, retryable: false } });
+      await bus?.emit({ ...base, type: "tool.failed", args: input, error: `${output.error!.code}: ${output.error!.message}`, durationMs: output.durationMs });
+      return output;
+    }
+    const policyAllowed = policy.allow.some((p) => matchToolPattern(p, toolName, input.action)) || policy.sessionAllow.some((p) => matchToolPattern(p, toolName, input.action));
+
     // human-in-the-loop: confirm mode asks before every execution; a failed prompt denies (fail-closed)
-    if (this.permissionGate?.mode === "confirm") {
+    if (this.permissionGate?.mode === "confirm" && !policyAllowed) {
       let allowed = false;
       try {
         allowed = await this.permissionGate.request({ taskId: opts.taskId, tool: toolName, action: input.action, args: input.args });

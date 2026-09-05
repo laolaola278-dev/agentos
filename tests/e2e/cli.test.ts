@@ -59,7 +59,7 @@ describe("CLI end-to-end", () => {
       assert.equal(spec.code, 0, spec.stdout + spec.stderr);
 
       const tools = await agentos(["tools", "list", "--json"], dir);
-      assert.equal((JSON.parse(tools.stdout) as unknown[]).length, 5);
+      assert.equal((JSON.parse(tools.stdout) as unknown[]).length, 6);
       const agents = await agentos(["agent", "list"], dir);
       assert.match(agents.stdout, /reviewer/);
       const metrics = await agentos(["metrics", "--prometheus"], dir);

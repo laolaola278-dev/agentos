@@ -23,6 +23,7 @@ import {
   type ResearchReport,
 } from "./agents";
 import type { Skill } from "./skills";
+import type { AgenticConfig } from "./config";
 import { getGitState, runGit } from "./tools/git";
 
 export interface OrchestratorDeps {
@@ -37,6 +38,8 @@ export interface OrchestratorDeps {
   shell?: string;
   /** User-authored skills injected into agentic system prompts. */
   skills?: Skill[];
+  /** Agentic loop behaviour (parallel tool calls). */
+  agentic?: Required<AgenticConfig>;
 }
 
 export class AbortedError extends Error {
@@ -76,12 +79,14 @@ export class Orchestrator {
   private model: ModelProvider | null;
   private heartbeatMs: number;
   private skills: Skill[];
+  private agentic: Required<AgenticConfig>;
 
   constructor(private deps: OrchestratorDeps) {
     this.verification = deps.verification ?? new VerificationEngine();
     this.model = deps.model ?? null;
     this.heartbeatMs = deps.heartbeatMs ?? 5000;
     this.skills = deps.skills ?? [];
+    this.agentic = deps.agentic ?? { parallelToolCalls: true, maxParallel: 4 };
   }
 
   async run(task: Task, opts: { signal: AbortSignal; checkpoint?: Checkpoint | null }): Promise<Task> {
@@ -141,6 +146,7 @@ export class Orchestrator {
       artifactsDir,
       shell: this.deps.shell,
       skills: this.skills,
+      agentic: this.agentic,
     });
 
     const heartbeat = setInterval(() => {

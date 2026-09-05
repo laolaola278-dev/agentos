@@ -125,3 +125,75 @@ test("runChat /confirm prompts for tool calls and honours a denial", async () =>
     await cleanup();
   }
 });
+
+test("chat session persists turns and --resume seeds context into the first turn", async () => {
+  const provider = new MockModelProvider({
+    onTools: (turn, messages) => {
+      capturedSystem.push(messages[0]?.content ?? "");
+      return turn === 1
+        ? { content: "", tokens: 1, toolCalls: [toolCall("filesystem__write", { path: "r.txt", content: "v" }, "call_r1")] }
+        : { content: "turn finished", tokens: 1, toolCalls: [] };
+    },
+  });
+  const capturedSystem: string[] = [];
+  const { rt, dir, cleanup } = await makeRuntime({ model: provider });
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const cap = captureOutput(output);
+  // a prior session file exists BEFORE the REPL starts (as if from an earlier chat run)
+  const { saveChatSession } = await import("@/agentos/chat");
+  await saveChatSession(path.join(dir, ".agentos"), { ts: new Date().toISOString(), goal: "refactor the auth module", status: "COMPLETED", summary: "auth module refactored, tests green" });
+  const session = runChat(rt, { autoApprove: true, input, output, resume: true });
+  try {
+    await cap.waitUntil((t) => t.split("agentos>").length >= 2, "first prompt ready");
+    input.write("continue with the next step\n");
+    await cap.waitUntil((t) => t.includes("[COMPLETED]"), "first turn completes");
+    await cap.waitUntil((t) => t.split("agentos>").length >= 3, "prompt after turn");
+    assert.match(cap.text(), /resumed session: 1 prior turn/, "resume banner");
+
+    // the persisted context was injected into the resumed turn's goal
+    const firstSystem = capturedSystem[0] ?? "";
+    assert.match(firstSystem, /previous session context/);
+    assert.match(firstSystem, /refactor the auth module/);
+
+    // the turn itself was persisted for the next resume
+    const turns = JSON.parse(await fsp.readFile(path.join(dir, ".agentos", "chat-session.json"), "utf8")) as { turns: { goal: string }[] };
+    assert.ok(turns.turns.some((t) => t.goal.includes("continue with the next step")), "turn persisted");
+
+    input.write("/exit\n");
+    assert.equal(await session, 0);
+  } finally {
+    input.end();
+    await Promise.race([session.catch(() => undefined), new Promise((r) => setTimeout(r, 8000))]);
+    await cleanup();
+  }
+});
+
+test("extra slash commands can be registered and /help lists them", async () => {
+  const provider = new MockModelProvider({});
+  const { rt, cleanup } = await makeRuntime({ model: provider });
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const cap = captureOutput(output);
+  const session = runChat(rt, {
+    input,
+    output,
+    extraCommands: { mystatus: { description: "show custom status", handler: () => cap2Print() } },
+  });
+  function cap2Print() {
+    output.write("custom-status-ok\n");
+  }
+  try {
+    await cap.waitUntil((t) => t.split("agentos>").length >= 2, "first prompt ready");
+    input.write("/mystatus\n");
+    await cap.waitUntil((t) => t.includes("custom-status-ok"), "extra command executed");
+    input.write("/help\n");
+    await cap.waitUntil((t) => t.includes("mystatus"), "/help lists the extra command");
+    input.write("/exit\n");
+    assert.equal(await session, 0);
+  } finally {
+    input.end();
+    await Promise.race([session.catch(() => undefined), new Promise((r) => setTimeout(r, 8000))]);
+    await cleanup();
+  }
+});

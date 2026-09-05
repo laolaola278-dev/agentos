@@ -70,3 +70,19 @@
     [x] Task 12.6 E3 evals.ts: suite format + deterministic scorer + persisted reports + mechanical variant comparison
         + agentos eval run|compare CLI
     [x] Task 12.7 Docs synced (README/ARCHITECTURE/SECURITY/DEVELOPMENT/STATE/PROGRESS)
+[x] Phase 13 CLI-gap upgrade (each item implemented → tested → compared against the corresponding CLI's docs)
+    [x] Task 13.1 Parallel tool calls: a turn's independent calls execute with bounded concurrency (default 4,
+        agentic.parallelToolCalls/maxParallel config); results re-ordered to model order preserving pairing
+    [x] Task 13.2 Subagent tool: isolated child runtime (fresh conversation/memory, registry without subagent — no
+        recursion), parent sees capped {status, summary} only; optional per-subagent instructions; subagent:false disables
+    [x] Task 13.3 repo-map (Aider-style, heuristic v1): TS/JS/Python/Go/Rust symbol extraction, dependency-dir skip,
+        symbol-density ranking, char budget; injected into agentic prompts + researcher reports
+    [x] Task 13.4 Permission policy table (Claude Code permissions semantics): config permissions.allow/deny patterns,
+        deny wins, explicit allow skips confirm prompts, bare-tool deny hides the schema from the model; /allow in chat
+    [x] Task 13.5 Sandbox hardening: CPU-seconds cap (ulimit -t) + injectable platform + container read-only rootfs
+        (Codex read-only-mode parity); Windows process tier remains an honest degrade
+    [x] Task 13.6 Chat session persistence + resume (chat-session.json, context seeded into first resumed turn) and a
+        slash-command registry (extensible via extraCommands; /help lists registered commands; /history, /new added)
+    [x] Task 13.7 Built-in eval preset: `core` suite (6 deterministic offline cases) via `agentos eval run --preset core`
+    [x] Task 13.8 MCP Streamable HTTP transport: JSON-RPC over POST, JSON + SSE response parsing, Mcp-Session-Id
+        carry-forward, custom headers; config mcpServers.<name>.transport=http + url/headers

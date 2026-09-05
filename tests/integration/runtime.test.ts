@@ -319,7 +319,7 @@ describe("runtime lifecycle", () => {
       assert.equal(doc.ok, true, JSON.stringify(doc.checks));
       assert.ok(doc.checks.find((c) => c.name === "persistence")!.detail.includes("sqlite"));
       assert.equal(rt2.listAgents().length, 7);
-      assert.equal(rt2.listTools().length, 5);
+      assert.equal(rt2.listTools().length, 6);
     } finally {
       await rt2.close();
       await cleanup().catch(() => undefined);
