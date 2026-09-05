@@ -11,6 +11,8 @@ export interface OpenAICompatibleOptions {
   headers?: Record<string, string>;
   /** Some local/OpenAI-compatible servers do not implement response_format. */
   jsonMode?: boolean;
+  /** Which body field carries the completion limit. Wrong guesses are auto-corrected on a 400 (see chat()). */
+  maxTokensField?: "max_tokens" | "max_completion_tokens";
   fetchImpl?: typeof fetch;
 }
 
@@ -72,9 +74,14 @@ interface ChatResponse {
   usage?: { total_tokens?: number };
 }
 
+/** Errors that mean "the completion-limit field name is wrong for this endpoint" — the harness retries with the other field. */
+const MAX_TOKENS_FIELD_ERROR_RE = /max[_ -]?completion[_ -]?tokens|max[_ -]?tokens|unknown parameter|unrecognized (parameter|argument)|unsupported parameter/i;
+
 /** Minimal OpenAI-compatible chat completion client (works with OpenAI, DeepSeek, GLM, Ollama, vLLM...). */
 export class OpenAICompatibleProvider implements ModelProvider {
   name: string;
+  private maxTokensFieldOverride?: "max_tokens" | "max_completion_tokens";
+  private fieldFlipped = false;
   constructor(private opts: OpenAICompatibleOptions) {
     this.name = `openai-compatible:${opts.model ?? "gpt-4o-mini"}`;
   }
@@ -83,8 +90,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
     return this.opts.model ?? "gpt-4o-mini";
   }
 
+  private maxTokensField(): "max_tokens" | "max_completion_tokens" {
+    return this.maxTokensFieldOverride ?? this.opts.maxTokensField ?? "max_tokens";
+  }
+
+  private maxTokensBody(limit: number): Record<string, unknown> {
+    return { [this.maxTokensField()]: Math.max(1, Math.min(limit, 1_000_000)) };
+  }
+
   /** Single request pipeline shared by complete/completeWithTools/stream: timeout, abort, retry, redaction. */
-  private async chat(body: Record<string, unknown>, opts: { signal?: AbortSignal; stream?: boolean } = {}): Promise<Response> {
+  private async chat(buildBody: () => Record<string, unknown>, opts: { signal?: AbortSignal; stream?: boolean } = {}): Promise<Response> {
     const base = (this.opts.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
     const controller = new AbortController();
     let timedOut = false;
@@ -98,11 +113,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const headers: Record<string, string> = { "content-type": "application/json", ...(this.opts.headers ?? {}) };
     if (this.opts.apiKey) headers.authorization = `Bearer ${this.opts.apiKey}`;
     const maxRetries = Math.max(0, Math.min(this.opts.maxRetries ?? 2, 10));
+    let body = JSON.stringify(buildBody());
     try {
       for (let attempt = 0; ; attempt++) {
         let res: Response;
         try {
-          res = await (this.opts.fetchImpl ?? fetch)(endpoint, { method: "POST", headers, body: JSON.stringify(body), signal: controller.signal });
+          res = await (this.opts.fetchImpl ?? fetch)(endpoint, { method: "POST", headers, body, signal: controller.signal });
         } catch (err) {
           if (controller.signal.aborted) {
             if (opts.signal?.aborted) throw new AgentOSError("MODEL_ABORTED", "model request aborted", { details: opts.signal.reason });
@@ -116,6 +132,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
         }
         if (!res.ok) {
           const responseText = redactString(await res.text().catch(() => ""));
+          // field-name crack: a 400 that names the completion-limit parameter means this
+          // endpoint expects the other field (e.g. max_tokens vs max_completion_tokens).
+          // Flip once and retry immediately — the retry budget stays untouched.
+          if (res.status === 400 && !this.fieldFlipped && MAX_TOKENS_FIELD_ERROR_RE.test(responseText)) {
+            this.maxTokensFieldOverride = this.maxTokensField() === "max_tokens" ? "max_completion_tokens" : "max_tokens";
+            this.fieldFlipped = true;
+            body = JSON.stringify(buildBody());
+            attempt--;
+            continue;
+          }
           const retryable = res.status >= 500 || res.status === 408 || res.status === 409 || res.status === 429;
           if (retryable && attempt < maxRetries) {
             await retryDelay(attempt, controller.signal, res.headers.get("retry-after"));
@@ -135,14 +161,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   async complete(messages: Message[], opts: { json?: boolean; maxTokens?: number; signal?: AbortSignal } = {}): Promise<ModelCompletion> {
-    const body: Record<string, unknown> = {
+    const res = await this.chat(() => ({
       model: this.model(),
       messages: toApiMessages(messages, { nativeTools: false }),
       temperature: 0,
-      max_tokens: Math.max(1, Math.min(opts.maxTokens ?? 2048, 1_000_000)),
+      ...this.maxTokensBody(opts.maxTokens ?? 2048),
       ...(opts.json && this.opts.jsonMode !== false ? { response_format: { type: "json_object" } } : {}),
-    };
-    const res = await this.chat(body, { signal: opts.signal });
+    }), { signal: opts.signal });
     const data = (await res.json()) as ChatResponse;
     const content = parseContent(data.choices?.[0]?.message?.content);
     if (!content.trim()) throw new AgentOSError("MODEL_EMPTY_RESPONSE", "model returned no content", { retryable: true });
@@ -151,15 +176,14 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   async completeWithTools(messages: Message[], tools: ToolSchema[], opts: { maxTokens?: number; signal?: AbortSignal } = {}): Promise<ModelToolCompletion> {
-    const body: Record<string, unknown> = {
+    const res = await this.chat(() => ({
       model: this.model(),
       messages: toApiMessages(messages, { nativeTools: true }),
       temperature: 0,
-      max_tokens: Math.max(1, Math.min(opts.maxTokens ?? 4096, 1_000_000)),
+      ...this.maxTokensBody(opts.maxTokens ?? 4096),
       tools: tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })),
       tool_choice: "auto",
-    };
-    const res = await this.chat(body, { signal: opts.signal });
+    }), { signal: opts.signal });
     const data = (await res.json()) as ChatResponse;
     const message = data.choices?.[0]?.message;
     const toolCalls = parseToolCalls(message?.tool_calls);
@@ -178,18 +202,19 @@ export class OpenAICompatibleProvider implements ModelProvider {
    * accumulated tool calls (when `tools` was provided).
    */
   async *stream(messages: Message[], opts: { tools?: ToolSchema[]; maxTokens?: number; signal?: AbortSignal } = {}): AsyncGenerator<ModelStreamEvent> {
-    const body: Record<string, unknown> = {
+    const res = await this.chat(() => ({
       model: this.model(),
       messages: toApiMessages(messages, { nativeTools: !!opts.tools?.length }),
       temperature: 0,
-      max_tokens: Math.max(1, Math.min(opts.maxTokens ?? 2048, 1_000_000)),
+      ...this.maxTokensBody(opts.maxTokens ?? 2048),
       stream: true,
-    };
-    if (opts.tools?.length) {
-      body.tools = opts.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
-      body.tool_choice = "auto";
-    }
-    const res = await this.chat(body, { signal: opts.signal, stream: true });
+      ...(opts.tools?.length
+        ? {
+            tools: opts.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })),
+            tool_choice: "auto",
+          }
+        : {}),
+    }), { signal: opts.signal, stream: true });
     if (!res.body) throw new AgentOSError("MODEL_ERROR", "model response has no body", { retryable: true });
     let content = "";
     let finishReason: string | undefined;

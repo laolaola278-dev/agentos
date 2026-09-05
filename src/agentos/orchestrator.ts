@@ -22,6 +22,7 @@ import {
   type Failure,
   type ResearchReport,
 } from "./agents";
+import type { Skill } from "./skills";
 import { getGitState, runGit } from "./tools/git";
 
 export interface OrchestratorDeps {
@@ -34,6 +35,8 @@ export interface OrchestratorDeps {
   /** How often (ms) to persist a heartbeat checkpoint while a long phase runs. */
   heartbeatMs?: number;
   shell?: string;
+  /** User-authored skills injected into agentic system prompts. */
+  skills?: Skill[];
 }
 
 export class AbortedError extends Error {
@@ -72,11 +75,13 @@ export class Orchestrator {
   private verification: VerificationEngine;
   private model: ModelProvider | null;
   private heartbeatMs: number;
+  private skills: Skill[];
 
   constructor(private deps: OrchestratorDeps) {
     this.verification = deps.verification ?? new VerificationEngine();
     this.model = deps.model ?? null;
     this.heartbeatMs = deps.heartbeatMs ?? 5000;
+    this.skills = deps.skills ?? [];
   }
 
   async run(task: Task, opts: { signal: AbortSignal; checkpoint?: Checkpoint | null }): Promise<Task> {
@@ -95,8 +100,21 @@ export class Orchestrator {
       cp.usage.elapsedMs = budget.elapsedMs();
       task.usage = { ...cp.usage };
       task.updatedAt = cp.savedAt;
-      await persistence.saveCheckpoint(cp);
+      // A lost checkpoint is a resumability degradation, never a reason to re-run
+      // completed steps: absorb its failure (warning event) as long as the task
+      // record itself persists. When saveTask fails too, the store is genuinely
+      // down and the error propagates → the task fails (chaos contract).
+      let cpError: string | null = null;
+      try {
+        await persistence.saveCheckpoint(cp);
+      } catch (err) {
+        cpError = errorMessage(err);
+      }
       await persistence.saveTask(task);
+      if (cpError) {
+        await bus.emit({ taskId: task.id, agentId: null, type: "checkpoint.save_failed", error: cpError, data: { version: cp.version, phase: cp.phase, progress: cp.progress } }).catch(() => undefined);
+        return;
+      }
       await bus.emit({ taskId: task.id, agentId: null, type: "checkpoint.saved", data: { version: cp.version, phase: cp.phase, progress: cp.progress, steps: cp.completedSteps.length } });
     });
 
@@ -122,6 +140,7 @@ export class Orchestrator {
       workdir: cp.worktree?.path ?? task.workdir,
       artifactsDir,
       shell: this.deps.shell,
+      skills: this.skills,
     });
 
     const heartbeat = setInterval(() => {

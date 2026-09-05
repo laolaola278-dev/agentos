@@ -41,6 +41,8 @@ export interface LlmConfig {
   jsonMode?: boolean;
   /** Override: default completion budget for agentic turns. */
   maxTokens?: number;
+  /** Override: body field for the completion limit (max_tokens on most endpoints; max_completion_tokens on newer OpenAI). A 400 naming the field auto-flips either way. */
+  maxTokensField?: "max_tokens" | "max_completion_tokens";
 }
 
 export interface AgentOsConfig {
@@ -135,9 +137,12 @@ export function validateAgentOsConfig(input: unknown): AgentOsConfig {
 
   if (src.llm !== undefined) {
     if (typeof src.llm !== "object" || src.llm === null || Array.isArray(src.llm)) throw new Error("llm must be an object");
-    const { provider, model, baseUrl, apiKeySecret, toolStreaming, jsonMode, maxTokens } = src.llm as Record<string, unknown>;
+    const { provider, model, baseUrl, apiKeySecret, toolStreaming, jsonMode, maxTokens, maxTokensField } = src.llm as Record<string, unknown>;
     if (provider !== undefined && !(typeof provider === "string" && provider in PROVIDER_PROFILES)) {
       throw new Error(`llm.provider must be one of ${Object.keys(PROVIDER_PROFILES).join(", ")}`);
+    }
+    if (maxTokensField !== undefined && maxTokensField !== "max_tokens" && maxTokensField !== "max_completion_tokens") {
+      throw new Error('llm.maxTokensField must be "max_tokens" or "max_completion_tokens"');
     }
     for (const [key, value] of [["model", model], ["baseUrl", baseUrl], ["apiKeySecret", apiKeySecret]] as const) {
       if (value !== undefined && (typeof value !== "string" || !value.trim())) throw new Error(`llm.${key} must be a non-empty string`);

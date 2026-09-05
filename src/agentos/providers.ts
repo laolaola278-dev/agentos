@@ -29,6 +29,8 @@ export interface ProviderProfile {
   toolStreaming: boolean;
   /** Default completion budget for agentic turns. */
   maxTokens: number;
+  /** Body field carrying the completion limit (older endpoints: max_tokens; newer OpenAI: max_completion_tokens). */
+  maxTokensField: "max_tokens" | "max_completion_tokens";
 }
 
 export const PROVIDER_PROFILES: Record<ProviderProfileId, ProviderProfile> = {
@@ -36,31 +38,37 @@ export const PROVIDER_PROFILES: Record<ProviderProfileId, ProviderProfile> = {
     id: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-4o-mini",
     apiKeyEnv: ["LLM_API_KEY", "OPENAI_API_KEY"], defaultSecretName: "LLM_API_KEY",
     jsonMode: true, toolStreaming: true, maxTokens: 8192,
+  maxTokensField: "max_tokens",
   },
   "github-models": {
     id: "github-models", label: "GitHub Models (hosted gateway)", baseUrl: "https://models.github.ai/inference", defaultModel: "openai/gpt-4o-mini",
     apiKeyEnv: ["GITHUB_TOKEN", "GH_TOKEN"], defaultSecretName: "GITHUB_TOKEN",
     jsonMode: true, toolStreaming: true, maxTokens: 8192,
+  maxTokensField: "max_tokens",
   },
   deepseek: {
     id: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", defaultModel: "deepseek-chat",
     apiKeyEnv: ["DEEPSEEK_API_KEY", "LLM_API_KEY"], defaultSecretName: "DEEPSEEK_API_KEY",
     jsonMode: true, toolStreaming: false, maxTokens: 8192,
+  maxTokensField: "max_tokens",
   },
   glm: {
     id: "glm", label: "Zhipu GLM", baseUrl: "https://open.bigmodel.cn/api/paas/v4", defaultModel: "glm-4-flash",
     apiKeyEnv: ["GLM_API_KEY", "ZHIPU_API_KEY", "LLM_API_KEY"], defaultSecretName: "GLM_API_KEY",
     jsonMode: true, toolStreaming: false, maxTokens: 8192,
+  maxTokensField: "max_tokens",
   },
   ollama: {
     id: "ollama", label: "Ollama (local)", baseUrl: "http://127.0.0.1:11434/v1", defaultModel: "qwen2.5-coder:7b",
     apiKeyEnv: [], defaultSecretName: "OLLAMA_API_KEY",
     jsonMode: false, toolStreaming: false, maxTokens: 8192,
+  maxTokensField: "max_tokens",
   },
   custom: {
     id: "custom", label: "Custom / reverse proxy", baseUrl: "", defaultModel: "",
     apiKeyEnv: ["LLM_API_KEY"], defaultSecretName: "LLM_API_KEY",
     jsonMode: false, toolStreaming: false, maxTokens: 8192,
+  maxTokensField: "max_tokens",
   },
 };
 
@@ -75,7 +83,7 @@ export interface ResolvedProviderSettings {
   baseUrl: string;
   model: string;
   apiKey?: string;
-  quirks: { toolStreaming: boolean; jsonMode: boolean; maxTokens: number };
+  quirks: { toolStreaming: boolean; jsonMode: boolean; maxTokens: number; maxTokensField: "max_tokens" | "max_completion_tokens" };
   /** Where the key came from (for doctor / audit; never the value). */
   keySource: "env" | "vault" | "none";
 }
@@ -132,6 +140,7 @@ export async function resolveProviderSettings(input: ProviderSettingsInput): Pro
       toolStreaming: llm.toolStreaming ?? profile.toolStreaming,
       jsonMode: llm.jsonMode ?? profile.jsonMode,
       maxTokens: llm.maxTokens ?? profile.maxTokens,
+      maxTokensField: llm.maxTokensField ?? profile.maxTokensField,
     },
   };
 }
@@ -143,6 +152,7 @@ export function createProviderFromSettings(settings: ResolvedProviderSettings, o
     baseUrl: settings.baseUrl,
     model: settings.model,
     jsonMode: settings.quirks.jsonMode,
+    maxTokensField: settings.quirks.maxTokensField,
     timeoutMs: overrides.timeoutMs,
     maxRetries: overrides.maxRetries,
     fetchImpl: overrides.fetchImpl,

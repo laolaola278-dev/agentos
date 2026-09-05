@@ -9,7 +9,7 @@ import { ToolRegistry } from "@/agentos/tools/registry";
 import { compactConversation, readProjectInstructions } from "@/agentos/agents";
 import { createDefaultToolRegistry } from "@/agentos/tools";
 import type { Message, ToolInput } from "@/agentos/types";
-import { tmpDir, MockModelProvider } from "../helpers";
+import { tmpDir, MockModelProvider, rmRetry } from "../helpers";
 
 // ---- transient events ----------------------------------------------------
 
@@ -145,7 +145,7 @@ test("readProjectInstructions picks up AGENTS.md from the workspace", async () =
     assert.match(text ?? "", /use pnpm/);
     assert.match(text ?? "", /never touch/);
   } finally {
-    await fsp.rm(dir, { recursive: true, force: true });
+    await rmRetry(dir);
   }
 });
 
@@ -159,7 +159,7 @@ test("readProjectInstructions falls back to CLAUDE.md and truncates huge files",
     assert.ok((capped ?? "").length <= 8100);
     assert.match(capped ?? "", /truncated/);
   } finally {
-    await fsp.rm(dir, { recursive: true, force: true });
+    await rmRetry(dir);
   }
 });
 

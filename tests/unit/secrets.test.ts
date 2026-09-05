@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { FileSecretVault, loadMasterKey, loadVault } from "@/agentos/secrets";
-import { tmpDir } from "../helpers";
+import { tmpDir, rmRetry } from "../helpers";
 
 test("vault roundtrip: set/get/list/delete", async () => {
   const dir = await tmpDir("agentos-vault-");
@@ -28,7 +28,7 @@ test("vault roundtrip: set/get/list/delete", async () => {
     const stat = await fsp.stat(path.join(dir, "secret.key"));
     assert.ok(stat.isFile());
   } finally {
-    await fsp.rm(dir, { recursive: true, force: true });
+    await rmRetry(dir);
   }
 });
 
@@ -40,7 +40,7 @@ test("vault rejects invalid names and empty values", async () => {
     await assert.rejects(vault.set("1STARTSWITHDIGIT", "x"), (err: Error & { code?: string }) => err.code === "SECRET_NAME_INVALID");
     await assert.rejects(vault.set("OK_NAME", ""), (err: Error & { code?: string }) => err.code === "SECRET_VALUE_EMPTY");
   } finally {
-    await fsp.rm(dir, { recursive: true, force: true });
+    await rmRetry(dir);
   }
 });
 
@@ -55,7 +55,7 @@ test("vault fails closed when the master key changed", async () => {
     // the original key still decrypts
     assert.equal(await vaultA.get("TOKEN"), "secret-value");
   } finally {
-    await fsp.rm(dir, { recursive: true, force: true });
+    await rmRetry(dir);
   }
 });
 
@@ -77,7 +77,7 @@ test("AGENTOS_SECRET_KEY env wins over the key file; loadVault returns null with
     const fresh = await loadVault(dir);
     await assert.rejects(fresh!.get("TOKEN"), (err: Error & { code?: string }) => err.code === "SECRET_DECRYPT_FAILED");
   } finally {
-    await fsp.rm(dir, { recursive: true, force: true });
+    await rmRetry(dir);
   }
 });
 

@@ -46,6 +46,10 @@ Implement `Agent<I, O>` in `agents.ts`, run it via `runAgent()` (emits `agent.*`
 - **Chat**: `chat.ts` — `chatTurn(rt, text, handlers, opts)` is the testable unit; `runChat` owns the readline loop and
   accepts injected `input`/`output` streams for tests (see tests/integration/chat-repl.test.ts). Note: pending
   `rl.question()` never settles on EOF on current Node — always race questions against the closed signal.
+- **Skills**: `.agentos/skills/*.md` (frontmatter `name`/`description`); hostile patterns are rejected at load
+  (`skills.rejected` event); injected section is capped — keep skill bodies tight (E1).
+- **Eval loop**: suites are JSON (`{name, cases:[{id, goal, acceptance?, verification?, budget?}]}`); the scorer is
+  deterministic — never add an LLM judge to `scoreCase`; compare reports join on case `id`, so ids are stable.
 - **Mocked LLM**: `MockModelProvider` (tests/helpers.ts) scripts both `completeWithTools` and streaming `stream` turns;
   use it for model-driven tests so the suite stays offline and deterministic.
 - **Optional tiers**: `test:smoke` needs `LLM_SMOKE=1` + `LLM_API_KEY`; the PG suite needs `TEST_DATABASE_URL`

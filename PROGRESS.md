@@ -98,3 +98,28 @@ auth or rate limits.
 - Tests: 126 total — container tier verified by a real Docker integration test (gated on a reachable daemon; skipped
   on this box where the daemon is down), vault/profile/sandbox/repair covered by unit tests; CLI smoke verified the
   vault end-to-end (set → list → masked get → doctor `key=vault` → delete).
+
+## Round 8 — capability-uplift round (continued from the parallel session's task list)
+Picked up the 6-item list the parallel session left mid-flight and closed it, after re-verifying the baseline myself
+(127 tests / 125 pass / 1 fail / 1 skip):
+- **#1 baseline** — the failing new fault-injection test (step-idempotency) exposed a real product gap: a transient
+  `saveCheckpoint` failure killed the task. Fixed in `orchestrator.save()`: a lost checkpoint is absorbed with a
+  `checkpoint.save_failed` warning as long as the task record still persists; `saveTask` failure (store truly down)
+  still fails the task — both the idempotency test and the chaos contract pass. The recovery control-channel test now
+  polls for step "b"'s side effect instead of a fixed 500ms sleep (their timing diagnosis, applied).
+- **maxTokensField quirk** — finished the fix motivated by the dsh finding (pi-ai guessed max_completion_tokens for an
+  unknown provider while z-ai models only accept max_tokens): the body field is per-profile/config (`llm.maxTokensField`)
+  and any 400 naming the parameter auto-flips max_tokens ↔ max_completion_tokens and retries once without consuming
+  the retry budget.
+- **E1 context.ts** — tool results are cleaned (head+tail strings, sliced arrays, stripped noisy keys) before entering
+  the model conversation; per-task external notes (`notes.md`) survive conversation compaction and are seeded into the
+  agentic conversation; `contextBudgetReport` makes the budget visible.
+- **E5 skills.ts** — `.agentos/skills/*.md` with frontmatter; hostile skills (RCE pipes, instruction overrides, persona
+  hijacks, prompt extraction, secret-shaped tokens, special-token smuggling) are REJECTED with a reason and never reach
+  the model; clean skills inject a capped section into the agentic system prompt; `agentos skills list|show`.
+- **Scoped API keys (auth.ts)** — plaintext shown once, SHA-256 hashed at rest, tasks:read/write/admin scopes, per-key
+  token bucket, audit events (`apikey.*`), enforcement wired into the dashboard task routes (off until the first key
+  exists). Fixed an auth bug during review: a required `admin` scope previously passed for ANY valid key.
+- **E3 evals.ts** — suite format, deterministic scorer, persisted reports, mechanical compare (regressions named);
+  `agentos eval run|compare`. CLI smoke: suite of 2 → 1/2 passed with the failing case named; apikeys/skills verified.
+- Tests: +15 (unit + integration); full suite run after this round reported in STATE.md.

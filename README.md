@@ -128,6 +128,32 @@ environment carries `AGENTOS_HOOK_EVENT` / `AGENTOS_TOOL` / `AGENTOS_ACTION` / `
 }
 ```
 
+## Skills, scoped API keys, eval loop
+
+```bash
+# Skills: markdown playbooks in .agentos/skills/*.md (frontmatter name/description),
+# injected into agentic system prompts. Files matching injection/abuse patterns are rejected.
+agentos skills list            # loaded + REJECTED (with reason)
+agentos skills show deploy
+
+# Scoped API keys guarding the dashboard API (auth is OFF until the first key exists):
+agentos apikeys create ci --scopes tasks:read,tasks:write   # key shown ONCE, only SHA-256 stored
+agentos apikeys list
+curl -H "Authorization: Bearer aos_..." http://localhost:3000/api/agentos/tasks
+agentos apikeys revoke key_xxx
+
+# Deterministic eval loop: run a suite, persist the report, compare variants mechanically:
+agentos eval run --suite evals.json --label baseline
+agentos eval run --suite evals.json --label variant-a
+agentos eval compare .agentos/evals/baseline-*.json .agentos/evals/variant-a-*.json
+```
+
+An eval case is `{ "id", "title", "goal", "acceptance?", "verification?", "budget?" }` — the scorer uses objective
+evidence only (task status + acceptance + counters), so a variant comparison names regressions and improvements
+mechanically. Context engineering (E1) is built in: tool results are cleaned (head+tail strings, sliced arrays,
+stripped noisy keys) before they enter the model conversation, and each agentic task keeps an external notes file
+(`.agentos/artifacts/<taskId>/notes.md`) that survives conversation compaction.
+
 ## Hooks (`.agentos/config.json`)
 
 Lifecycle hooks in the style of Claude Code: a JSON payload describing the event goes to the hook command's stdin;

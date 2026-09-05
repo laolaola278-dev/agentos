@@ -156,7 +156,7 @@ test("a down MCP server does not take the runtime offline", async () => {
     assert.equal(done.status, "COMPLETED");
   } finally {
     await rt.close();
-    await fsp.rm(dir, { recursive: true, force: true });
+    await rmRetry(dir);
   }
 });
 
@@ -177,6 +177,6 @@ test("config.json in the data dir is auto-loaded by AgentRuntime.create", async 
     assert.equal(await fsp.readFile(path.join(dir, "auto-hook.txt"), "utf8"), "fired", "auto-loaded hook executed");
   } finally {
     await rt.close();
-    await fsp.rm(dir, { recursive: true, force: true });
+    await rmRetry(dir);
   }
 });

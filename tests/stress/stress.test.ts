@@ -2,7 +2,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { makeRuntime } from "../helpers";
+import { makeRuntime, rmRetry } from "../helpers";
 import { EventBus } from "@/agentos/events";
 import { SqlitePersistence, FilePersistence } from "@/agentos/persistence";
 import { createDefaultToolRegistry } from "@/agentos/tools";
@@ -88,7 +88,7 @@ describe("stress", () => {
     for (let i = 1; i < 100; i += 3) assert.equal(await fsp.readFile(path.join(dir, `f${i}.txt`), "utf8"), `c${i}`);
     console.log(`# stress: 100 concurrent tool calls in ${ms}ms`);
     await processes.shutdown();
-    await fsp.rm(dir, { recursive: true, force: true });
+    await rmRetry(dir);
   });
 
   test("event throughput + replay: 5000 events through sqlite and file stores, ordering preserved", async () => {

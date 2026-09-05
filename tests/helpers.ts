@@ -5,8 +5,26 @@ import { AgentRuntime, type RuntimeOptions } from "@/agentos/runtime";
 import { runGit } from "@/agentos/tools/git";
 import type { Message, ModelCompletion, ModelProvider, ModelStreamEvent, ModelToolCompletion, ToolSchema } from "@/agentos/types";
 
+/**
+ * Root for all test scratch directories.
+ *
+ * `os.tmpdir()` resolves to `C:\Users\<user>\AppData\Local\Temp` on Windows,
+ * which breaks the standing rule that scratch data must never land on the
+ * system drive. Tests therefore honour an explicit override:
+ *   AGENTOS_TEST_TMP  (preferred)
+ *   TMPDIR / TEMP     (fallback)
+ * and only fall back to os.tmpdir() when none is set.
+ */
+export function testTmpRoot(): string {
+  const override = process.env.AGENTOS_TEST_TMP || process.env.TMPDIR || process.env.TEMP;
+  if (override && override.trim()) return path.resolve(override.trim());
+  return os.tmpdir();
+}
+
 export async function tmpDir(prefix = "agentos-test-"): Promise<string> {
-  return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
+  const root = testTmpRoot();
+  await fsp.mkdir(root, { recursive: true });
+  return fsp.mkdtemp(path.join(root, prefix));
 }
 
 export async function makeRuntime(opts: RuntimeOptions & { git?: boolean } = {}): Promise<{ rt: AgentRuntime; dir: string; cleanup: () => Promise<void> }> {
@@ -23,7 +41,9 @@ export async function makeRuntime(opts: RuntimeOptions & { git?: boolean } = {})
     dir,
     cleanup: async () => {
       await rt.close();
-      await fsp.rm(dir, { recursive: true, force: true });
+      // Windows keeps a deleted tree locked while child processes still hold it
+      // as their cwd; a bare rm races and fails with EBUSY.
+      await rmRetry(dir);
     },
   };
 }

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { normalizeSandboxConfig, planSandboxedCommand, resetDaemonProbe, dockerDaemonAvailable } from "@/agentos/sandbox";
-import { tmpDir } from "../helpers";
+import { tmpDir, rmRetry } from "../helpers";
 
 test("normalizeSandboxConfig: defaults, string modes, validation", () => {
   assert.equal(normalizeSandboxConfig(undefined).mode, "none");
@@ -59,7 +59,7 @@ test("planSandboxedCommand container: writes run script, builds docker command, 
     await plan.cleanup();
     await assert.rejects(fsp.readFile(path.join(dir, ".agentos-sandbox", `run-${scriptName}.sh`), "utf8"));
   } finally {
-    await fsp.rm(dir, { recursive: true, force: true });
+    await rmRetry(dir);
   }
 });
 

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { tmpDir } from "../helpers";
+import { tmpDir, rmRetry } from "../helpers";
 
 const BIN = path.join(process.cwd(), "bin", "agentos.js");
 
@@ -73,7 +73,7 @@ describe("CLI end-to-end", () => {
       const recover = await agentos(["recover"], dir);
       assert.match(recover.stdout, /nothing to recover/);
     } finally {
-      await fsp.rm(dir, { recursive: true, force: true });
+      await rmRetry(dir);
     }
   });
 
@@ -99,7 +99,7 @@ describe("CLI end-to-end", () => {
       assert.equal(log.filter((l) => l === "1").length, 1);
       assert.equal(log.at(-1), "3");
     } finally {
-      await fsp.rm(dir, { recursive: true, force: true });
+      await rmRetry(dir);
     }
   });
 });

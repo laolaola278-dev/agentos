@@ -20,6 +20,8 @@ import type { PermissionMode, PermissionRequest } from "./types";
 import { loadVault, type SecretVault } from "./secrets";
 import { normalizeSandboxConfig, type SandboxConfig } from "./sandbox";
 import { resolveProviderSettings, createProviderFromSettings, type ResolvedProviderSettings } from "./providers";
+import { loadSkills, type Skill } from "./skills";
+import { loadApiKeyStore, ApiKeyAuthorizer, type ApiKeyStore } from "./auth";
 
 export type PersistenceKind = "memory" | "file" | "sqlite";
 
@@ -171,6 +173,11 @@ export class AgentRuntime {
   readonly config: AgentOsConfig;
   readonly secrets: SecretVault | null;
   readonly sandbox: SandboxConfig;
+  /** Loaded user skills (.agentos/skills/*.md) injected into agentic prompts. */
+  readonly skills: Skill[] = [];
+  /** Scoped API-key authorizer; null when no apikeys.json exists (auth disabled). */
+  auth: ApiKeyAuthorizer | null = null;
+  apiKeyStore: ApiKeyStore | null = null;
   /** Resolved provider settings (profile, key source) for introspection — never the key value. */
   providerSettings: ResolvedProviderSettings | null = null;
   readonly mcpClients = new Map<string, McpClient>();
@@ -199,7 +206,7 @@ export class AgentRuntime {
     this.processes = created.processes;
     this.concurrency = Math.max(1, opts.concurrency ?? 2);
     this.defaultBudget = { ...DEFAULT_BUDGET, ...(opts.defaultBudget ?? {}) };
-    this.orchestrator = new Orchestrator({ persistence, bus: this.bus, tools: this.tools, verification: this.verification, model: this.model, dataDir: this.dataDir, heartbeatMs: opts.heartbeatMs, shell: opts.shell });
+    this.orchestrator = new Orchestrator({ persistence, bus: this.bus, tools: this.tools, verification: this.verification, model: this.model, dataDir: this.dataDir, heartbeatMs: opts.heartbeatMs, shell: opts.shell, skills: this.skills });
     this.metrics.attach(this.bus);
     if (this.sandbox.mode !== "none") this.verification.setSandbox(this.sandbox);
     if (this.config.hooks && Object.keys(this.config.hooks).length > 0) {
@@ -239,6 +246,28 @@ export class AgentRuntime {
     }
     const rt = new AgentRuntime({ ...opts, rootDir, dataDir, config, secrets: vault, sandbox, model }, persistence);
     rt.providerSettings = providerSettings;
+    const apiKeyStore = await loadApiKeyStore(dataDir);
+    rt.apiKeyStore = apiKeyStore;
+    rt.auth = apiKeyStore
+      ? new ApiKeyAuthorizer(apiKeyStore, {
+          onDecision: (decision) => {
+            void rt.bus
+              .emit({
+                taskId: null,
+                agentId: null,
+                type: decision.allowed ? "apikey.authenticated" : decision.status === 429 ? "apikey.rate_limited" : "apikey.denied",
+                data: { keyId: decision.keyId ?? null, scope: decision.reason, status: decision.status },
+              })
+              .catch(() => undefined);
+          },
+        })
+      : null;
+    // skills: .agentos/skills/*.md — rejected (suspicious) files surface as an event, never silently
+    const skillsLoad = await loadSkills(path.join(dataDir, "skills"));
+    rt.skills.push(...skillsLoad.skills);
+    if (skillsLoad.rejected.length) {
+      await rt.bus.emit({ taskId: null, agentId: null, type: "skills.rejected", data: { rejected: skillsLoad.rejected } }).catch(() => undefined);
+    }
     if (config?.mcpServers && Object.keys(config.mcpServers).length > 0) {
       try {
         rt.mcpRegistrations = await registerMcpTools(rt.tools, config.mcpServers, {

@@ -1,16 +1,17 @@
 # STATE
 
-- Phase: 11 — COMPLETE (hardening round: sandbox tiers, encrypted secrets vault, provider profiles + quirk adaptation)
+- Phase: 12 — COMPLETE (capability-uplift round: baseline fix, maxTokensField crack, E1 context engineering, E5 skills, scoped API keys, E3 eval loop)
 - Current task: none
-- Completed modules: everything in TODO.md phases 1–11
+- Completed modules: everything in TODO.md phases 1–12
   - core runtime, orchestrator (plan + agentic modes), tools, CLI, dashboard, docs
-  - model layer: text / native tool-calling / SSE streaming (tool-call fragment reassembly) + malformed-argument repair
-  - extensions: lifecycle hooks + MCP servers via `.agentos/config.json`
-  - interactive: `agentos chat` REPL with confirm permission gate, Ctrl-C cancellation, EOF-safe questions
-  - context management: AGENTS.md instructions + automatic conversation compaction
-  - sandbox tiers: none / process (POSIX ulimits) / container (Docker, network-off, caps) for terminal + verification
-  - secrets vault: AES-256-GCM `.agentos/secrets.json` + `agentos secrets` CLI
+  - model layer: text / native tool-calling / SSE streaming + malformed-argument repair + maxTokensField auto-flip
+  - extensions: lifecycle hooks + MCP servers; sandbox tiers (none/process/container); encrypted secrets vault
   - provider profiles: openai / github-models / deepseek / glm / ollama / custom reverse proxy with quirk adaptation
+  - interactive: `agentos chat` REPL with confirm permission gate and EOF-safe questions
+  - context engineering (E1): cleanToolResult + external notes surviving compaction + budget report
+  - skills (E5): .agentos/skills loader with injection-pattern rejection + agentos skills CLI
+  - auth: scoped API keys (SHA-256 at rest, token bucket, audit events) enforcing dashboard API routes
+  - eval loop (E3): deterministic scorer, persisted reports, mechanical variant comparison + agentos eval CLI
 - Blockers: none
-- Next: optional follow-ups in FINAL-REPORT.md (real-LLM smoke once a key exists in the env; dashboard sandbox/permission UI)
-- Last test result: `TEST_DATABASE_URL=... npm run test:all` → 126 tests, 125 passed / 0 failed / 1 skipped (container sandbox tier — Docker daemon down on this box); lint clean; typecheck clean; next build OK. Optional tiers: `test:smoke` (real LLM, requires LLM_SMOKE=1 + key).
+- Next: optional — dashboard auth/sandbox UI, subagent context isolation, skill-set curation, real-LLM smoke once a key exists
+- Last test result: `TEST_DATABASE_URL=... npm run test:all` → 142 tests, 141 passed / 0 failed / 1 skipped (container sandbox tier — Docker daemon down on this box); lint clean; typecheck clean; next build OK. Optional tiers: `test:smoke` (real LLM, requires LLM_SMOKE=1 + key), `test:serial` (loaded machines).

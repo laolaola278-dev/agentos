@@ -401,6 +401,8 @@ export interface ModelStreamEvent {
 
 export interface ModelProvider {
   name: string;
+  /** Provider compatibility quirks ("cracked" behaviours) consumed by the harness loops. */
+  quirks?: { toolStreaming?: boolean; jsonMode?: boolean; maxTokens?: number; maxTokensField?: "max_tokens" | "max_completion_tokens" };
   complete(messages: Message[], opts?: { json?: boolean; maxTokens?: number; signal?: AbortSignal }): Promise<ModelCompletion>;
   /**
    * Native tool-calling completion (OpenAI-compatible `tools` / `tool_calls`).

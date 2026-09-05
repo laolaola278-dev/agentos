@@ -5,7 +5,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { AgentRuntime } from "@/agentos/runtime";
 import { SqlitePersistence } from "@/agentos/persistence";
-import { tmpDir } from "../helpers";
+import { tmpDir, rmRetry } from "../helpers";
 
 const WORKER = path.join(process.cwd(), "tests", "recovery", "worker.ts");
 
@@ -75,7 +75,7 @@ describe("crash recovery", () => {
       assert.equal(await rt.persistence.loadCheckpoint(taskId), null);
     } finally {
       await rt.close();
-      await fsp.rm(dir, { recursive: true, force: true });
+      await rmRetry(dir);
     }
   });
 
@@ -103,7 +103,7 @@ describe("crash recovery", () => {
       assert.equal(log.filter((l) => l === "s3").length, 1);
     } finally {
       await rt.close();
-      await fsp.rm(dir, { recursive: true, force: true });
+      await rmRetry(dir);
     }
   });
 
@@ -119,7 +119,7 @@ describe("crash recovery", () => {
       t.status = "EXECUTING";
       await p.saveTask(t);
       await p.saveCheckpoint({ taskId: t.id, version: 3, phase: "EXECUTING", attempt: 0, completedSteps: [], messages: [], verification: [], workdir: work, usage: t.usage, progress: 20, savedAt: "" });
-      await fsp.rm(work, { recursive: true });
+      await rmRetry(work);
       const r = await rt.recoverTask(t.id);
       assert.equal(r.task.status, "FAILED");
       assert.match(r.task.error!, /workdir missing/);
@@ -138,7 +138,7 @@ describe("crash recovery", () => {
       await assert.rejects(() => rt.recoverTask("missing-id"), /not found/);
     } finally {
       await rt.close();
-      await fsp.rm(base, { recursive: true, force: true });
+      await rmRetry(base);
     }
   });
 
@@ -152,7 +152,16 @@ describe("crash recovery", () => {
         { id: "c", tool: "terminal", action: "execute", args: { command: "echo c >> c.log" } },
       ] });
       await rt.startTask(t.id);
-      await new Promise((r) => setTimeout(r, 500));
+      // pause must land while step "b" (sleep 2) is in flight: "a" is checkpointed
+      // by then, "b" is not. Poll for the side effect instead of a fixed sleep —
+      // a fixed 500ms races runtime/spawn startup on loaded machines.
+      const pauseDeadline = Date.now() + 15_000;
+      for (;;) {
+        const lines = (await fsp.readFile(path.join(dir, "c.log"), "utf8").catch(() => "")).trim().split("\n").filter(Boolean);
+        if (lines.includes("b")) break;
+        if (Date.now() > pauseDeadline) throw new Error(`step b never wrote its side effect; log=${JSON.stringify(lines)}`);
+        await new Promise((r) => setTimeout(r, 50));
+      }
       // simulate another process writing the control file
       const other = await AgentRuntime.create({ rootDir: dir, persistence: "memory", model: null, controlPollMs: 0 });
       await other.sendControl(t.id, "pause");
@@ -168,7 +177,7 @@ describe("crash recovery", () => {
       assert.equal(log.at(-1), "c");
     } finally {
       await rt.close();
-      await fsp.rm(dir, { recursive: true, force: true });
+      await rmRetry(dir);
     }
   });
 });

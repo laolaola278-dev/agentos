@@ -44,7 +44,11 @@
 | `chat.ts` | Interactive REPL (`agentos chat`): goals → agentic tasks with live streamed output, permission prompts, Ctrl-C cancels the running task; `chatTurn()` is the testable core |
 | `sandbox.ts` | Pluggable sandbox tiers for shell commands: `none` / `process` (POSIX ulimit caps) / `container` (ephemeral Docker: workspace at `/workspace`, no network, dropped caps, mem/cpu/pids limits); script-file mounting keeps stdin usable; fails closed or degrades per config |
 | `secrets.ts` | Encrypted local vault (`.agentos/secrets.json`, AES-256-GCM; master key in `.agentos/secret.key` 0600 or `AGENTOS_SECRET_KEY`); CLI `agentos secrets`; names only in diagnostics |
-| `providers.ts` | Provider profiles (openai / github-models / deepseek / glm / ollama / custom reverse proxy): baseUrl, model, key env names, compatibility quirks (tool-call streaming, JSON mode, maxTokens); key resolution config.llm.apiKeySecret → env → vault |
+| `providers.ts` | Provider profiles (openai / github-models / deepseek / glm / ollama / custom reverse proxy): baseUrl, model, key env names, compatibility quirks (tool-call streaming, JSON mode, maxTokens, maxTokensField); key resolution config.llm.apiKeySecret → env → vault; a 400 naming the completion-limit field auto-flips max_tokens ↔ max_completion_tokens |
+| `context.ts` | Context engineering (E1): `cleanToolResult` (head+tail strings, sliced arrays, stripped keys) shapes what the MODEL sees; `NotesStore` external memory per task survives compaction; `contextBudgetReport` |
+| `skills.ts` | Skill library (E5): `.agentos/skills/*.md` loaded with frontmatter; injection-pattern scan REJECTS hostile skills (RCE pipes, instruction overrides, persona hijacks, secret-shaped tokens) with reasons; capped prompt section |
+| `auth.ts` | Scoped API keys: SHA-256 hashed storage (plaintext shown once), scopes tasks:read/write/admin, per-key token bucket, `loadApiKeyStore` gates enforcement on the first created key |
+| `evals.ts` | Eval loop (E3): suites of tasks with objective verifiers, deterministic scorer (status + acceptance + counters), persisted reports, mechanical variant comparison (regressions named) |
 | `cli.ts` | Command line interface |
 | `server.ts` | Next.js server singleton (PG persistence, auto-recover, daemon) |
 

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { validateAgentOsConfig, loadAgentOsConfig } from "@/agentos/config";
-import { tmpDir } from "../helpers";
+import { tmpDir, rmRetry } from "../helpers";
 
 test("validateAgentOsConfig accepts hooks and mcpServers", () => {
   const cfg = validateAgentOsConfig({
@@ -45,6 +45,6 @@ test("loadAgentOsConfig reads dataDir/config.json and reports invalid JSON", asy
     await fsp.writeFile(path.join(dir, "config.json"), "{not json");
     await assert.rejects(loadAgentOsConfig(dir), (err: Error) => (err as Error & { code?: string }).code === "CONFIG_INVALID");
   } finally {
-    await fsp.rm(dir, { recursive: true, force: true });
+    await rmRetry(dir);
   }
 });

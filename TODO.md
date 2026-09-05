@@ -55,3 +55,18 @@
         proxies; quirk adaptation (tool-call streaming on/off) + malformed tool-argument repair + model.truncated events
     [x] Task 11.4 doctor reports provider profile, sandbox tier, vault entries (names only)
     [x] Task 11.5 Tests: 126 total (container tier gated on a reachable Docker daemon)
+[x] Phase 12 Capability-uplift round (E1/E3/E5 + auth hardening + baseline fixes)
+    [x] Task 12.1 Baseline: orchestrator save() tolerates transient checkpoint failures (absorb + `checkpoint.save_failed`
+        warning; task-record failure still fails the task — chaos contract kept); recovery control test polls for step "b"
+        instead of a fixed 500ms sleep
+    [x] Task 12.2 maxTokensField quirk (mirrors the dsh finding): per-provider body field max_tokens ↔
+        max_completion_tokens; a 400 naming the parameter auto-flips and retries once, retry budget untouched
+    [x] Task 12.3 E1 context.ts: cleanToolResult (head+tail strings, sliced arrays, stripped noisy keys) applied to
+        model-facing tool results; NotesStore external memory per task (survives compaction); contextBudgetReport
+    [x] Task 12.4 E5 skills.ts: .agentos/skills/*.md loader + injection-pattern scan (reject with reason) + capped
+        system-prompt section + agentos skills list|show; runtime loads at start, skills.rejected audit event
+    [x] Task 12.5 Scoped API keys auth.ts: SHA-256 hashed storage (plaintext once), tasks:read/write/admin scopes,
+        per-key token bucket, audit events, enforcement in dashboard API routes (off until first key), agentos apikeys CLI
+    [x] Task 12.6 E3 evals.ts: suite format + deterministic scorer + persisted reports + mechanical variant comparison
+        + agentos eval run|compare CLI
+    [x] Task 12.7 Docs synced (README/ARCHITECTURE/SECURITY/DEVELOPMENT/STATE/PROGRESS)

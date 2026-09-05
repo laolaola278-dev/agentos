@@ -19,6 +19,26 @@ async function setup() {
   return { dir, registry, processes, exec };
 }
 
+/** Polls `terminal.poll` until `re` matches the accumulated stdout (or times out). */
+async function waitForProcessOutput(
+  exec: (tool: string, action: string, args: Record<string, unknown>) => Promise<{ data?: unknown; error?: { code: string } }>,
+  id: string,
+  re: RegExp,
+  timeoutMs: number,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let last = "";
+  for (;;) {
+    const poll = await exec("terminal", "poll", { id });
+    last = String((poll.data as { stdout?: string } | undefined)?.stdout ?? "");
+    if (re.test(last)) return last;
+    if (Date.now() > deadline) {
+      throw new Error(`timed out after ${timeoutMs}ms waiting for ${re} in process output; saw: ${JSON.stringify(last)}`);
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 describe("filesystem tool", () => {
   test("write/read/append/edit/list/search/stat/move/copy/delete", async () => {
     const { exec, dir } = await setup();
@@ -124,9 +144,13 @@ describe("terminal + process tools", () => {
     const { exec, processes } = await setup();
     const start = await exec("terminal", "start", { command: "for i in 1 2 3; do echo tick$i; sleep 0.1; done; sleep 30" });
     const id = (start.data as { id: string }).id;
-    await new Promise((r) => setTimeout(r, 500));
+    // Poll for the marker instead of sleeping a fixed 500ms: on Windows each
+    // `sleep` is a separate fork/exec costing ~250-300ms, so a fixed wait is a
+    // POSIX-calibrated guess that flakes here. The product streams output as it
+    // arrives — only the test's timing assumption was wrong.
+    const stdout = await waitForProcessOutput(exec, id, /tick3/, 15_000);
+    assert.match(stdout, /tick3/);
     const poll = await exec("terminal", "poll", { id });
-    assert.match((poll.data as { stdout: string }).stdout, /tick3/);
     assert.equal((poll.data as { running: boolean }).running, true);
     const list = await exec("process", "list", {});
     assert.equal((list.data as { processes: unknown[] }).processes.length, 1);

@@ -5,7 +5,7 @@ import { PROVIDER_PROFILES, resolveProviderSettings, createProviderFromSettings 
 import { repairToolArguments, balanceJson } from "@/agentos/model";
 import { validateAgentOsConfig } from "@/agentos/config";
 import { FileSecretVault, loadMasterKey } from "@/agentos/secrets";
-import { tmpDir } from "../helpers";
+import { tmpDir, rmRetry } from "../helpers";
 
 test("provider profiles: github-models points at the hosted gateway with GITHUB_TOKEN", () => {
   assert.equal(PROVIDER_PROFILES["github-models"].baseUrl, "https://models.github.ai/inference");
@@ -58,7 +58,7 @@ test("resolveProviderSettings: named vault secret beats env; profile defaults ap
     assert.equal(provider.name, "openai-compatible:gpt-x");
     assert.equal(provider.quirks?.toolStreaming, false, "quirks attached for the agentic loop");
   } finally {
-    await fsp.rm(dir, { recursive: true, force: true });
+    await rmRetry(dir);
   }
 });
 
@@ -76,7 +76,7 @@ test("resolveProviderSettings: vault default entry used when env missing; null w
     assert.equal(local?.keySource, "none");
     assert.equal(local?.baseUrl, "http://127.0.0.1:11434/v1");
   } finally {
-    await fsp.rm(dir, { recursive: true, force: true });
+    await rmRetry(dir);
   }
 });
 

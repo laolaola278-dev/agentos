@@ -28,6 +28,8 @@ import type { VerificationEngine } from "./verification";
 import { extractJson, repairToolArguments } from "./model";
 import { redactString } from "./security";
 import { getGitState, runGit } from "./tools/git";
+import { cleanToolResult, NotesStore } from "./context";
+import { skillsPromptSection, type Skill } from "./skills";
 
 // ---------------------------------------------------------------------------
 // Budget guard
@@ -77,6 +79,8 @@ export interface AgentContext {
   workdir: string;
   artifactsDir: string;
   shell?: string;
+  /** User-authored skills injected into agentic system prompts (E5). */
+  skills?: Skill[];
 }
 
 export interface Agent<I, O> {
@@ -411,8 +415,11 @@ export function toolSchemasFromRegistry(registry: ToolRegistry): { schemas: Tool
 }
 
 function summariseForModel(output: ToolOutput, maxChars = 4000): string {
-  const payload = { ok: output.ok, data: output.data, error: output.error, truncated: output.truncated };
-  let json = JSON.stringify(payload) ?? "{}";
+  // E1: clean the payload BEFORE it enters the model conversation (head+tail
+  // strings, sliced arrays, stripped noisy keys). The full payload is already
+  // in the event log for the reviewer — the model only needs the signal.
+  const cleaned = cleanToolResult({ ok: output.ok, data: output.data, error: output.error, truncated: output.truncated });
+  let json = JSON.stringify(cleaned.data) ?? "{}";
   if (json.length > maxChars) json = json.slice(0, maxChars) + `…[truncated, ${json.length} chars total]`;
   return json;
 }
@@ -537,15 +544,22 @@ export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
     // some providers / reverse proxies do not stream tool_calls deltas correctly —
     // quirks.toolStreaming=false falls back to non-streaming tool calling
     const toolStreaming = ctx.model.quirks?.toolStreaming !== false;
+    const notes = new NotesStore(ctx.artifactsDir);
+    const notesTail = await notes.read(2000);
+    const skillsSection = skillsPromptSection(ctx.skills ?? []);
     const conversation: Message[] = [
       {
         role: "system",
-        content: `${AGENTIC_SYSTEM}\n\nWorkspace: ${ctx.workdir}\nGoal: ${goal}${instructions ? `\n\nProject instructions (AGENTS.md):\n${instructions}` : ""}`,
+        content: `${AGENTIC_SYSTEM}\n\nWorkspace: ${ctx.workdir}\nGoal: ${goal}${instructions ? `\n\nProject instructions (AGENTS.md):\n${instructions}` : ""}${skillsSection ? `\n\n${skillsSection}` : ""}`,
         ts: nowIso(),
       },
     ];
     if (input.research) {
       conversation.push({ role: "user", content: `[workspace research] ${JSON.stringify({ ...input.research, files: input.research.files.slice(0, 50) }).slice(0, 4000)}`, ts: nowIso() });
+    }
+    if (notesTail) {
+      // E1: external memory survives conversation compaction
+      conversation.push({ role: "user", content: `[external notes from earlier in this task] ${notesTail}`, ts: nowIso() });
     }
     // recovery: replay earlier observations so a resumed task keeps its context
     for (const m of ctx.checkpoint.messages.slice(-8)) {
@@ -631,6 +645,7 @@ export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
         results.push(result);
         conversation.push({ role: "tool", toolCallId: call.id, name: call.name, content: result.ok ? summariseForModel(result.output!) : `ERROR: ${result.error}`, ts: nowIso() });
         pushMessage(ctx, "tool", `${result.stepId} ${result.tool}.${result.action} -> ${result.ok ? "ok" : `FAILED ${result.error}`}`, "executor");
+        await notes.append(`${result.stepId} ${result.tool}.${result.action} -> ${result.ok ? "ok" : `FAILED ${String(result.error).slice(0, 120)}`}`);
         await input.onTurn(result);
       }
       // keep long agentic runs inside the context window

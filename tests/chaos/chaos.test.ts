@@ -2,7 +2,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { makeRuntime } from "../helpers";
+import { makeRuntime, rmRetry } from "../helpers";
 import { MemoryPersistence } from "@/agentos/persistence";
 import { AgentRuntime } from "@/agentos/runtime";
 import { ToolRegistry, createDefaultToolRegistry } from "@/agentos/tools";
@@ -58,7 +58,7 @@ describe("chaos", () => {
       p.saveCheckpoint = origCp;
     } finally {
       await rt.close();
-      await fsp.rm(dir, { recursive: true, force: true });
+      await rmRetry(dir);
     }
   });
 
@@ -87,7 +87,7 @@ describe("chaos", () => {
       assert.equal(rt.bus.stats.pending, 0);
     } finally {
       await rt.close();
-      await fsp.rm(dir, { recursive: true, force: true });
+      await rmRetry(dir);
     }
   });
 
@@ -150,7 +150,7 @@ describe("chaos", () => {
       ], budget: { maxRetries: 1, timeoutMs: 20_000 } });
       await rt.startTask(t.id);
       await new Promise((r) => setTimeout(r, 300));
-      await fsp.rm(work, { recursive: true, force: true });
+      await rmRetry(work);
       const done = await rt.waitForTask(t.id);
       assert.equal(done.status, "FAILED");
       assert.ok(done.error);
@@ -174,7 +174,7 @@ describe("chaos", () => {
       assert.equal((await rt2.recoverAll()).recovered.length, 0);
     } finally {
       await rt2.close();
-      await fsp.rm(dir, { recursive: true, force: true });
+      await rmRetry(dir);
     }
   });
 });

@@ -57,6 +57,9 @@ Commands:
   daemon                        Run the scheduler loop, executing queued tasks until Ctrl-C
   chat [--auto]                 Interactive session: type goals, watch the agent work (LLM required)
   secrets list|set|get|delete   Encrypted local vault for API keys (.agentos/secrets.json, AES-256-GCM)
+  skills list|show <name>       User skills (.agentos/skills/*.md) injected into agentic prompts
+  apikeys create|list|revoke    Scoped API keys (SHA-256 hashed) guarding the dashboard API
+  eval run|compare              Deterministic eval suites + policy-variant comparison
 
 Global options:
   --root <dir>        Workspace root (default: cwd)
@@ -255,6 +258,69 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
             console.error("usage: agentos secrets list | set <NAME> | get <NAME> [--show] | delete <NAME>");
             return 2;
         }
+      }
+      case "skills": {
+        const { loadSkills } = await import("./skills");
+        const res = await loadSkills(path.join(dataDir, "skills"));
+        if (sub === "show" && rest[0]) {
+          const s = res.skills.find((x) => x.name === rest[0] || x.file === rest[0]);
+          if (!s) throw new Error(`no loaded skill "${rest[0]}" (rejected files are not available)`);
+          out(s, json, () => `${s.name} (${s.file})\n${s.description}\n\n${s.excerpt}`);
+          return 0;
+        }
+        const lines = [...res.skills.map((s) => `  ${s.name} — ${s.description || "(no description)"} (${s.file})`), ...res.rejected.map((r) => `  ✗ REJECTED ${r.file}: ${r.reason}`)];
+        out({ skills: res.skills, rejected: res.rejected }, json, () => lines.join("\n") || "(no skills — add .md files to <dataDir>/skills)");
+        return 0;
+      }
+      case "apikeys": {
+        const { ApiKeyStore, API_KEY_SCOPES } = await import("./auth");
+        const store = new ApiKeyStore(path.join(dataDir, "apikeys.json"));
+        switch (sub) {
+          case "create": {
+            const name = rest[0];
+            if (!name) throw new Error("usage: agentos apikeys create <name> [--scopes tasks:read,tasks:write]");
+            const scopes = (typeof flags.scopes === "string" ? flags.scopes.split(",").map((s) => s.trim()).filter(Boolean) : ["tasks:read"]) as ("tasks:read" | "tasks:write" | "admin")[];
+            const created = await store.create(name, scopes);
+            out({ id: created.id, key: created.key, scopes: created.record.scopes }, json, () => `created ${created.id}\n  key (shown ONCE): ${created.key}\n  scopes: ${created.record.scopes.join(", ")}`);
+            return 0;
+          }
+          case "list": {
+            const keys = await store.list();
+            out(keys, json, () => keys.map((k) => `  ${k.id}  ${k.name}  [${k.scopes.join(", ")}]${k.revokedAt ? " REVOKED" : ""}`).join("\n") || "(no API keys — auth is disabled until one exists)");
+            return 0;
+          }
+          case "revoke": {
+            const id = rest[0];
+            if (!id) throw new Error("usage: agentos apikeys revoke <id>");
+            const ok = await store.revoke(id);
+            out({ id, revoked: ok }, json, () => `${id}: ${ok ? "revoked" : "not found or already revoked"}`);
+            return ok ? 0 : 1;
+          }
+          default:
+            console.error(`usage: agentos apikeys create <name> [--scopes ...] | list | revoke <id>\nscopes: ${API_KEY_SCOPES.join(", ")}`);
+            return 2;
+        }
+      }
+      case "eval": {
+        const { parseEvalSuite, runEvalSuite, saveEvalReport, loadEvalReport, compareReports } = await import("./evals");
+        if (sub === "run") {
+          if (typeof flags.suite !== "string") throw new Error("usage: agentos eval run --suite cases.json --label <name>");
+          const label = typeof flags.label === "string" ? flags.label : `run-${Date.now()}`;
+          const suite = parseEvalSuite(await fsp.readFile(flags.suite, "utf8"));
+          const report = await runEvalSuite(rt, suite, label);
+          const file = await saveEvalReport(path.join(dataDir, "evals"), report);
+          out({ ...report, file }, json, () => `eval(${label}) ${report.passed}/${report.total} passed (${(report.passRate * 100).toFixed(0)}%), tokens=${report.tokens}, tools=${report.toolCalls}\n  report: ${file}${report.failed ? "\n" + report.results.filter((r) => !r.passed).map((r) => `  ✗ ${r.id}: ${r.detail}`).join("\n") : ""}`);
+          return report.failed ? 1 : 0;
+        }
+        if (sub === "compare") {
+          const [a, b] = rest;
+          if (!a || !b) throw new Error("usage: agentos eval compare <base-report.json> <candidate-report.json>");
+          const cmp = compareReports(await loadEvalReport(a), await loadEvalReport(b));
+          out(cmp, json, () => `${cmp.baseLabel} → ${cmp.candidateLabel}: pass rate ${(cmp.passRateDelta >= 0 ? "+" : "")}${(cmp.passRateDelta * 100).toFixed(0)}pp, tokens ${cmp.tokensDelta >= 0 ? "+" : ""}${cmp.tokensDelta}\n  improvements: ${cmp.improvements.map((i) => i.id).join(", ") || "none"}\n  regressions: ${cmp.regressions.map((r) => r.id).join(", ") || "none"}`);
+          return cmp.regressions.length ? 1 : 0;
+        }
+        console.error("usage: agentos eval run --suite <file> --label <name> | compare <base.json> <candidate.json>");
+        return 2;
       }
       case "daemon": {
         const r = await rt.recoverAll();
