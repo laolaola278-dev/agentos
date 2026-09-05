@@ -1,0 +1,47 @@
+{
+  "name": "nextjs-postgresql-template",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/unit/*.test.ts tests/integration/*.test.ts",
+    "test:unit": "tsx --test tests/unit/*.test.ts",
+    "test:integration": "tsx --test tests/integration/*.test.ts",
+    "test:e2e": "tsx --test tests/e2e/*.test.ts",
+    "test:recovery": "tsx --test tests/recovery/*.test.ts",
+    "test:stress": "tsx --test tests/stress/*.test.ts",
+    "test:chaos": "tsx --test tests/chaos/*.test.ts",
+    "test:all": "tsx --test tests/unit/*.test.ts tests/integration/*.test.ts tests/e2e/*.test.ts tests/recovery/*.test.ts tests/chaos/*.test.ts tests/stress/*.test.ts",
+    "agentos": "tsx src/agentos/cli.ts",
+    "bench": "tsx scripts/bench.ts"
+  },
+  "dependencies": {
+    "dotenv": "17.3.1",
+    "drizzle-orm": "0.45.2",
+    "next": "16.2.6",
+    "pg": "8.20.0",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.1.17",
+    "@types/node": "22.19.15",
+    "@types/pg": "8.18.0",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "drizzle-kit": "0.31.10",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.2.6",
+    "postcss": "8.5.8",
+    "tailwindcss": "4.1.17",
+    "tsx": "^4.23.13",
+    "typescript": "5.9.3"
+  },
+  "bin": {
+    "agentos": "bin/agentos.js"
+  }
+}
