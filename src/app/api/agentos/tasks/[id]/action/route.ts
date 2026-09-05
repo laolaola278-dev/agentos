@@ -1,5 +1,5 @@
 import { getServerRuntime } from "@/agentos/server";
-import { fail, json } from "../../../_util";
+import { authorizeApiRequest, fail, json } from "../../../_util";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +11,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     const { id } = await ctx.params;
     const { action } = (await req.json()) as { action: Action };
     if (!ACTIONS.includes(action)) return json({ error: `unknown action ${action}` }, { status: 400 });
+    const denied = await authorizeApiRequest(req, "tasks:write");
+    if (denied) return denied;
     const rt = await getServerRuntime();
     switch (action) {
       case "start":

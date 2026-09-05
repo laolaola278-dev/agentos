@@ -302,11 +302,13 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         }
       }
       case "eval": {
-        const { parseEvalSuite, runEvalSuite, saveEvalReport, loadEvalReport, compareReports } = await import("./evals");
+        const { parseEvalSuite, runEvalSuite, saveEvalReport, loadEvalReport, compareReports, getPresetSuite, BUILTIN_EVAL_SUITES } = await import("./evals");
         if (sub === "run") {
-          if (typeof flags.suite !== "string") throw new Error("usage: agentos eval run --suite cases.json --label <name>");
+          let suite;
+          if (typeof flags.preset === "string") suite = getPresetSuite(flags.preset);
+          else if (typeof flags.suite === "string") suite = parseEvalSuite(await fsp.readFile(flags.suite, "utf8"));
+          else throw new Error(`usage: agentos eval run --suite <file.json> | --preset <${Object.keys(BUILTIN_EVAL_SUITES).join("|")}> --label <name>`);
           const label = typeof flags.label === "string" ? flags.label : `run-${Date.now()}`;
-          const suite = parseEvalSuite(await fsp.readFile(flags.suite, "utf8"));
           const report = await runEvalSuite(rt, suite, label);
           const file = await saveEvalReport(path.join(dataDir, "evals"), report);
           out({ ...report, file }, json, () => `eval(${label}) ${report.passed}/${report.total} passed (${(report.passRate * 100).toFixed(0)}%), tokens=${report.tokens}, tools=${report.toolCalls}\n  report: ${file}${report.failed ? "\n" + report.results.filter((r) => !r.passed).map((r) => `  ✗ ${r.id}: ${r.detail}`).join("\n") : ""}`);

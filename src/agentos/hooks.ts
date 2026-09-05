@@ -2,6 +2,7 @@ import type { EventInput } from "./types";
 import type { EventBus } from "./events";
 import type { HookConfig, HookEvent } from "./config";
 import { runCommand } from "./tools/terminal";
+import { matchToolPattern } from "./tools/registry";
 import { buildSafeEnv, redactSecrets } from "./security";
 
 export interface HookRunnerOptions {
@@ -30,12 +31,7 @@ interface HookPayloadInput {
 
 /** true when the hook pattern matches `tool.action` (`*`, `tool`, `tool.*`, `tool.action`). */
 export function hookMatches(match: string | undefined, tool: string, action: string): boolean {
-  const m = match ?? "*";
-  if (m === "*") return true;
-  const dot = m.indexOf(".");
-  if (dot < 0) return m === tool;
-  const [t, a] = [m.slice(0, dot), m.slice(dot + 1)];
-  return t === tool && (a === "*" || a === action);
+  return matchToolPattern(match, tool, action);
 }
 
 /**

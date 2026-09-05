@@ -60,8 +60,31 @@ export interface EvalRunReport {
   results: EvalCaseResult[];
 }
 
-export function parseEvalSuite(raw: string): EvalSuite {
-  const parsed = JSON.parse(raw) as EvalSuite;
+/**
+ * Built-in preset suites (Terminal-Bench-style: every case has objective
+ * verifiers, all run offline/deterministically). `agentos eval run --preset core`.
+ */
+export const BUILTIN_EVAL_SUITES: Record<string, EvalSuite> = {
+  core: {
+    name: "core",
+    cases: [
+      { id: "fs-write", title: "atomic file write + existence check", goal: "write ok.txt: preset works\ncheck exists ok.txt" },
+      { id: "fs-multi", title: "multi-file write with content checks", goal: "write a.txt: alpha\nwrite b.txt: beta\ncheck contains a.txt: alpha\ncheck not-contains b.txt: alpha" },
+      { id: "terminal-redir", title: "shell redirection", goal: "run: echo terminal-ok > t.txt\ncheck contains t.txt: terminal-ok" },
+      { id: "terminal-pipe", title: "shell pipeline (sort + head)", goal: "run: printf \"c\\nb\\na\\n\" | sort | head -1 > first.txt\ncheck contains first.txt: a" },
+      { id: "verify-cmd", title: "verification command gates completion", goal: "write numbers.txt: 7 13 42\nrun: grep -q 42 numbers.txt\nverify: test -f numbers.txt" },
+      { id: "delete-guarded", title: "delete then confirm absence", goal: "write temp.txt: x\ndelete temp.txt\ncheck command: test ! -f temp.txt" },
+    ],
+  },
+};
+
+export function getPresetSuite(name: string): EvalSuite {
+  const suite = BUILTIN_EVAL_SUITES[name];
+  if (!suite) throw new AgentOSError("EVAL_PRESET_NOT_FOUND", `unknown eval preset "${name}" (available: ${Object.keys(BUILTIN_EVAL_SUITES).join(", ")})`);
+  return suite;
+}
+
+export function parseEvalSuite(raw: string): EvalSuite {  const parsed = JSON.parse(raw) as EvalSuite;
   if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.cases)) throw new AgentOSError("INVALID_EVAL_SUITE", "eval suite must be an object with a cases array");
   for (const [i, c] of parsed.cases.entries()) {
     if (!c || typeof c !== "object" || !c.id || typeof c.goal !== "string") {

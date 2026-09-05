@@ -30,8 +30,12 @@ export interface SandboxConfig {
   cpus?: number;
   /** pids cap (container + process modes). Default 256. */
   pidsLimit?: number;
+  /** CPU seconds cap (process mode, ulimit -t; default 600). */
+  cpuSeconds?: number;
   /** Network access inside the container. Default false. */
   network?: boolean;
+  /** Container: read-only root filesystem + tmpfs /tmp (workspace stays writable). Default true. */
+  readonlyRootfs?: boolean;
   /** When the sandbox backend is unavailable: "fail" (default, secure) or "degrade" to none with a warning. */
   onUnavailable?: "fail" | "degrade";
 }
@@ -42,7 +46,9 @@ export const DEFAULT_SANDBOX: Required<Omit<SandboxConfig, "image">> & { image: 
   memoryMb: 512,
   cpus: 1,
   pidsLimit: 256,
+  cpuSeconds: 600,
   network: false,
+  readonlyRootfs: true,
   onUnavailable: "fail",
 };
 
@@ -54,6 +60,7 @@ export function normalizeSandboxConfig(input: Partial<SandboxConfig> | string | 
   if (!Number.isFinite(cfg.memoryMb) || (cfg.memoryMb as number) < 32 || (cfg.memoryMb as number) > 65_536) throw new AgentOSError("CONFIG_INVALID", "sandbox.memoryMb must be 32..65536");
   if (!Number.isFinite(cfg.cpus) || (cfg.cpus as number) <= 0 || (cfg.cpus as number) > 64) throw new AgentOSError("CONFIG_INVALID", "sandbox.cpus must be >0 and <=64");
   if (!Number.isFinite(cfg.pidsLimit) || (cfg.pidsLimit as number) < 16 || (cfg.pidsLimit as number) > 4096) throw new AgentOSError("CONFIG_INVALID", "sandbox.pidsLimit must be 16..4096");
+  if (!Number.isFinite(cfg.cpuSeconds) || (cfg.cpuSeconds as number) < 1 || (cfg.cpuSeconds as number) > 86_400) throw new AgentOSError("CONFIG_INVALID", "sandbox.cpuSeconds must be 1..86400");
   if (cfg.image !== undefined && (typeof cfg.image !== "string" || !/^[a-zA-Z0-9._:/-]+$/.test(cfg.image))) throw new AgentOSError("CONFIG_INVALID", `sandbox.image looks invalid: ${cfg.image}`);
   return cfg;
 }
@@ -94,16 +101,22 @@ export interface SandboxPlan {
  *   `docker run …` invocation; `cleanup()` deletes the script.
  * - process (POSIX): prefixes ulimit vmem/pid caps. Windows degrades to none.
  */
-export async function planSandboxedCommand(command: string, opts: { workdir: string; cfg: SandboxConfig; available?: () => Promise<boolean> }): Promise<SandboxPlan> {
+export async function planSandboxedCommand(command: string, opts: { workdir: string; cfg: SandboxConfig; available?: () => Promise<boolean>; platform?: NodeJS.Platform }): Promise<SandboxPlan> {
   const cfg = normalizeSandboxConfig(opts.cfg);
+  const platform = opts.platform ?? process.platform;
   const noop: SandboxPlan = { command, cleanup: async () => undefined, mode: "none" };
   if (cfg.mode === "none") return noop;
 
   if (cfg.mode === "process") {
-    if (process.platform === "win32") {
+    if (platform === "win32") {
+      // Windows Job Objects need native bindings — degrade honestly (SECURITY.md)
       return { ...noop, note: "process limits are unsupported on win32; ran unsandboxed" };
     }
-    const caps = [`ulimit -v ${Math.round((cfg.memoryMb ?? DEFAULT_SANDBOX.memoryMb) * 1024)} 2>/dev/null`, `ulimit -u ${cfg.pidsLimit ?? DEFAULT_SANDBOX.pidsLimit} 2>/dev/null`].join("; ");
+    const caps = [
+      `ulimit -t ${cfg.cpuSeconds ?? DEFAULT_SANDBOX.cpuSeconds} 2>/dev/null`,
+      `ulimit -v ${Math.round((cfg.memoryMb ?? DEFAULT_SANDBOX.memoryMb) * 1024)} 2>/dev/null`,
+      `ulimit -u ${cfg.pidsLimit ?? DEFAULT_SANDBOX.pidsLimit} 2>/dev/null`,
+    ].join("; ");
     return { command: `${caps}; ${command}`, cleanup: async () => undefined, mode: "process" };
   }
 
@@ -124,6 +137,7 @@ export async function planSandboxedCommand(command: string, opts: { workdir: str
     `--memory ${cfg.memoryMb}m`,
     `--cpus ${cfg.cpus}`,
     `--pids-limit ${cfg.pidsLimit}`,
+    cfg.readonlyRootfs === false ? "" : "--read-only --tmpfs /tmp",
     "--cap-drop ALL --security-opt no-new-privileges",
     `-e AGENTOS_SANDBOXED=1`,
     `-v "${workdirSpec}"`,

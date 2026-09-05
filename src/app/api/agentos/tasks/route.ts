@@ -1,11 +1,13 @@
 import { getServerRuntime } from "@/agentos/server";
 import type { TaskSpec, TaskStatus } from "@/agentos/types";
-import { fail, json } from "../_util";
+import { authorizeApiRequest, fail, json } from "../_util";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
   try {
+    const denied = await authorizeApiRequest(req, "tasks:read");
+    if (denied) return denied;
     const rt = await getServerRuntime();
     const url = new URL(req.url);
     const status = url.searchParams.get("status");
@@ -18,6 +20,8 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const denied = await authorizeApiRequest(req, "tasks:write");
+    if (denied) return denied;
     const rt = await getServerRuntime();
     const body = (await req.json()) as TaskSpec & { start?: boolean };
     const { start, ...spec } = body;
