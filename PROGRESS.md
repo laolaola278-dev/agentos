@@ -148,3 +148,17 @@ Closed the actionable gaps from the detailed CLI comparison, each with a post-im
 8. **MCP Streamable HTTP transport** (vs MCP spec 2025-03-26+): POST JSON-RPC, JSON+SSE response parsing,
    Mcp-Session-Id carry-forward, custom headers, graceful mcp.failed on misconfig. Spec gaps left open: 404 session
    re-initialize, GET server-initiated stream, DELETE termination. [MCP transport spec]
+
+## Round 10 — remaining-deficiency closure (subagent allowlists, ask tier, transcript resume, MCP sessions)
+All four leftovers from the CLI-gap report closed, each with tests:
+- **Subagent tool allowlists** (Claude Code subagent `tools:`): `subagent__run.tools` filters the child registry via
+  `ToolRegistry.filteredView` — agentic children see only allowed schemas; plan-mode children fail UNKNOWN_TOOL on
+  anything outside the allowlist.
+- **Permission ask tier**: policy precedence is now deny > ask > allow; an ask rule forces the approval prompt even in
+  auto mode and fails closed (PERMISSION_DENIED) when no approval channel exists — headless-safe.
+- **Transcript-level session resume**: `TaskSpec.context` (≤20 user/assistant messages, validated) is seeded into the
+  agentic conversation as real messages; chat-session entries persist the model's closing message; `chat --resume`
+  replays prior turns as a transcript instead of a summary block, and turns accumulate across the live session too.
+- **MCP advanced sessions**: an expired session (spec: 404) triggers a transparent re-initialize + one request replay;
+  `close()` sends the spec DELETE termination; `runtime.close()` now awaits MCP client shutdown (caught a fire-and-
+  forget close that truncated the DELETE).

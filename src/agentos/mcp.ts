@@ -269,7 +269,7 @@ export class HttpMcpClient {
   }
 
   /** Sends one JSON-RPC message; resolves with the parsed body (JSON or first SSE data message). */
-  private async rpc(method: string, params: Record<string, unknown>, opts: { id?: number; timeoutMs: number }): Promise<Record<string, unknown>> {
+  private async rpc(method: string, params: Record<string, unknown>, opts: { id?: number; timeoutMs: number; allowReinit?: boolean }): Promise<Record<string, unknown>> {
     const id = opts.id ?? this.nextId++;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new ToolError("MCP_TIMEOUT", `MCP HTTP request ${method} timed out after ${opts.timeoutMs}ms`, { retryable: true })), opts.timeoutMs);
@@ -280,6 +280,13 @@ export class HttpMcpClient {
         body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
         signal: controller.signal,
       });
+      if (res.status === 404 && this.sessionId && opts.allowReinit !== false) {
+        // spec: an expired/invalid session id SHOULD surface as 404 → start a fresh
+        // session (new initialize) and replay the request once
+        this.sessionId = null;
+        await this.doInitialize(opts.timeoutMs);
+        return this.rpc(method, params, { ...opts, allowReinit: false });
+      }
       if (!res.ok) throw new ToolError("MCP_HTTP_ERROR", `MCP HTTP ${method} failed: ${res.status}`);
       const sid = res.headers.get("mcp-session-id");
       if (sid) this.sessionId = sid;
@@ -311,13 +318,17 @@ export class HttpMcpClient {
 
   async connect(timeoutMs?: number): Promise<void> {
     const t = timeoutMs ?? this.cfg.timeoutMs ?? 30_000;
-    const res = (await this.rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "agentos", version: "1.0.0" } }, { id: this.nextId++, timeoutMs: t })) as {
+    await this.doInitialize(t);
+    await this.rpc("notifications/initialized", {}, { id: this.nextId++, timeoutMs: t });
+  }
+
+  private async doInitialize(timeoutMs: number): Promise<void> {
+    const res = (await this.rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "agentos", version: "1.0.0" } }, { id: this.nextId++, timeoutMs, allowReinit: false })) as {
       result?: { serverInfo?: { name?: string; version?: string }; protocolVersion?: string };
       error?: { message?: string };
     };
     if (res.error) throw new ToolError("MCP_ERROR", `initialize failed: ${res.error.message ?? "unknown"}`);
     this.serverInfo = { ...(res.result?.serverInfo ?? {}), protocolVersion: res.result?.protocolVersion };
-    await this.rpc("notifications/initialized", {}, { id: this.nextId++, timeoutMs: t });
   }
 
   async listTools(timeoutMs?: number): Promise<McpToolDef[]> {
@@ -339,7 +350,11 @@ export class HttpMcpClient {
   }
 
   async close(): Promise<void> {
+    const sessionId = this.sessionId;
     this.sessionId = null;
+    if (!sessionId) return;
+    // spec: servers may terminate a session via HTTP DELETE with the session header
+    await fetch(this.cfg.url, { method: "DELETE", headers: { "mcp-session-id": sessionId, ...(this.cfg.headers ?? {}) } }).catch(() => undefined);
   }
 }
 

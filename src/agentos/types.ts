@@ -116,6 +116,11 @@ export interface TaskSpec {
    * verification and the independent reviewer still gate completion with objective evidence.
    */
   mode?: ExecutionMode;
+  /**
+   * Transcript-level seed for agentic tasks (session resume): prior user/assistant
+   * messages injected into the child conversation. Capped at 20 messages, 8000 chars each.
+   */
+  context?: Message[];
 }
 
 export type ExecutionMode = "plan" | "agentic";

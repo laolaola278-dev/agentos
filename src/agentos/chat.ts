@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { AgentRuntime } from "./runtime";
-import type { AcceptanceCheck, AgentEvent, PermissionRequest } from "./types";
+import type { AcceptanceCheck, AgentEvent, Message, PermissionRequest } from "./types";
 
 /** Persisted chat session: one entry per completed turn (`agentos chat --resume`). */
 export interface ChatSessionEntry {
@@ -10,6 +10,8 @@ export interface ChatSessionEntry {
   goal: string;
   status: string;
   summary?: string;
+  /** The model's closing message — stored so resume can replay the transcript. */
+  assistant?: string;
 }
 
 interface ChatSessionFile {
@@ -47,14 +49,16 @@ export async function loadChatSession(dataDir: string): Promise<ChatSessionEntry
   }
 }
 
-/** Builds the carry-over context injected into the first turn of a resumed session. */
-export function sessionContextBlock(turns: ChatSessionEntry[], maxTurns = 8, maxChars = 3000): string {
+/** Builds the transcript-level carry-over: prior turns as real user/assistant messages. */
+export function sessionContextMessages(turns: ChatSessionEntry[], maxTurns = 10): Message[] {
   const recent = turns.filter((t) => t.goal).slice(-maxTurns);
-  if (!recent.length) return "";
-  const lines = recent.map((t) => `- [${t.status}] ${t.goal.replace(/\s+/g, " ").slice(0, 200)}${t.summary ? ` → ${t.summary.replace(/\s+/g, " ").slice(0, 200)}` : ""}`);
-  let block = lines.join("\n");
-  if (block.length > maxChars) block = block.slice(-maxChars);
-  return `[previous session context — completed turns and outcomes]\n${block}`;
+  const messages: Message[] = [];
+  for (const t of recent) {
+    messages.push({ role: "user", content: t.goal.slice(0, 8000), ts: t.ts });
+    const assistant = t.assistant ?? t.summary ?? `[${t.status}]`;
+    messages.push({ role: "assistant", content: assistant.slice(0, 8000), ts: t.ts });
+  }
+  return messages;
 }
 
 export interface ChatHandlers {
@@ -87,17 +91,17 @@ const BANNER = `AgentOS chat — type a goal; the agent works on this directory 
  * One conversational turn: creates an agentic task, streams its events, waits for
  * completion. Kept separate from the readline loop so it is directly testable.
  */
-export async function chatTurn(rt: AgentRuntime, text: string, handlers: ChatHandlers, opts: { budget?: { maxToolCalls?: number; timeoutMs?: number }; acceptance?: AcceptanceCheck[]; context?: string } = {}): Promise<ChatTurnResult> {
+export async function chatTurn(rt: AgentRuntime, text: string, handlers: ChatHandlers, opts: { budget?: { maxToolCalls?: number; timeoutMs?: number }; acceptance?: AcceptanceCheck[]; contextMessages?: Message[] } = {}): Promise<ChatTurnResult> {
   if (!rt.model?.completeWithTools) {
     throw new Error("chat needs an LLM with tool calling — set LLM_API_KEY (and LLM_BASE_URL / LLM_MODEL)");
   }
-  const goal = opts.context ? `[previous session context]\n${opts.context}\n\n[current request] ${text}` : text;
   const task = await rt.createTask({
     title: text.slice(0, 80),
-    goal,
+    goal: text,
     mode: "agentic",
     budget: { maxToolCalls: opts.budget?.maxToolCalls ?? 100, timeoutMs: opts.budget?.timeoutMs ?? 10 * 60_000 },
     ...(opts.acceptance?.length ? { acceptance: opts.acceptance } : {}),
+    ...(opts.contextMessages?.length ? { context: opts.contextMessages } : {}),
   });
   handlers.onStart?.(task.id);
   let inDelta = false;
@@ -238,10 +242,9 @@ export async function runChat(rt: AgentRuntime, opts: ChatOptions = {}): Promise
   let exitRequested = false;
   // session resume: persisted turns seed the first turn's context (Claude Code --resume)
   let sessionTurns = opts.resume ? (await loadChatSession(rt.dataDir)) ?? [] : [];
-  let turnContext = "";
+  let contextMessages = sessionContextMessages(sessionTurns);
   if (opts.resume && sessionTurns.length) {
-    turnContext = sessionContextBlock(sessionTurns);
-    print(`resumed session: ${sessionTurns.length} prior turn(s) carried over`);
+    print(`resumed session: ${sessionTurns.length} prior turn(s) replayed as transcript`);
   }
   // slash command registry — extensible via opts.extraCommands
   interface SlashCommand {
@@ -293,7 +296,7 @@ export async function runChat(rt: AgentRuntime, opts: ChatOptions = {}): Promise
   });
   define("new", "clear the persisted session", () => {
     sessionTurns = [];
-    turnContext = "";
+    contextMessages = [];
     try {
       fs.rmSync(sessionFile(rt.dataDir), { force: true });
     } catch {
@@ -341,9 +344,10 @@ export async function runChat(rt: AgentRuntime, opts: ChatOptions = {}): Promise
         },
       };
       try {
-        const res = await chatTurn(rt, line, handlers, { budget: { maxToolCalls: opts.maxToolCalls }, context: turnContext });
-        turnContext = ""; // carry-over context applies to the first resumed turn only
-        sessionTurns.push({ ts: new Date().toISOString(), goal: line, status: res.status, summary: res.summary });
+        const res = await chatTurn(rt, line, handlers, { budget: { maxToolCalls: opts.maxToolCalls }, contextMessages });
+        // transcript continuity within this chat run AND for the next --resume
+        contextMessages = [...contextMessages, { role: "user" as const, content: line, ts: new Date().toISOString() }, { role: "assistant" as const, content: res.summary ?? `[${res.status}]`, ts: new Date().toISOString() }].slice(-20);
+        sessionTurns.push({ ts: new Date().toISOString(), goal: line, status: res.status, summary: res.summary, assistant: res.summary });
         await saveChatSession(rt.dataDir, sessionTurns.at(-1)!);
         if (res.status === "FAILED") exitCode = 1;
       } catch (err) {

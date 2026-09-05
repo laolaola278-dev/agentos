@@ -581,6 +581,12 @@ export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
         ts: nowIso(),
       },
     ];
+    // transcript-level session resume: prior user/assistant turns seed the conversation
+    // as real messages (not a summary block), so the model continues the dialogue
+    for (const m of (ctx.task.spec.context ?? []).slice(-20)) {
+      if (m.role !== "user" && m.role !== "assistant") continue;
+      conversation.push({ role: m.role, content: m.content.slice(0, 8000), ts: nowIso() });
+    }
     if (input.research) {
       conversation.push({ role: "user", content: `[workspace research] ${JSON.stringify({ ...input.research, files: input.research.files.slice(0, 50) }).slice(0, 4000)}`, ts: nowIso() });
     }

@@ -127,9 +127,11 @@ test("runChat /confirm prompts for tool calls and honours a denial", async () =>
 });
 
 test("chat session persists turns and --resume seeds context into the first turn", async () => {
+  const capturedTurnMessages: { role: string; content: string }[][] = [];
   const provider = new MockModelProvider({
     onTools: (turn, messages) => {
       capturedSystem.push(messages[0]?.content ?? "");
+      capturedTurnMessages.push(messages.map((m) => ({ role: m.role, content: m.content })));
       return turn === 1
         ? { content: "", tokens: 1, toolCalls: [toolCall("filesystem__write", { path: "r.txt", content: "v" }, "call_r1")] }
         : { content: "turn finished", tokens: 1, toolCalls: [] };
@@ -151,10 +153,16 @@ test("chat session persists turns and --resume seeds context into the first turn
     await cap.waitUntil((t) => t.split("agentos>").length >= 3, "prompt after turn");
     assert.match(cap.text(), /resumed session: 1 prior turn/, "resume banner");
 
-    // the persisted context was injected into the resumed turn's goal
-    const firstSystem = capturedSystem[0] ?? "";
-    assert.match(firstSystem, /previous session context/);
-    assert.match(firstSystem, /refactor the auth module/);
+    // transcript-level resume: prior user/assistant turns are real conversation messages
+    const firstTurnMessages = capturedSystem.length ? (capturedTurnMessages[0] ?? []) : [];
+    assert.ok(
+      firstTurnMessages.some((m) => m.role === "user" && m.content.includes("refactor the auth module")),
+      "prior user turn replayed into the conversation",
+    );
+    assert.ok(
+      firstTurnMessages.some((m) => m.role === "assistant" && m.content.includes("auth module refactored")),
+      "prior assistant turn replayed into the conversation",
+    );
 
     // the turn itself was persisted for the next resume
     const turns = JSON.parse(await fsp.readFile(path.join(dir, ".agentos", "chat-session.json"), "utf8")) as { turns: { goal: string }[] };

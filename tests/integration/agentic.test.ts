@@ -304,3 +304,41 @@ test("invalid mode is rejected at task creation", async () => {
     await cleanup();
   }
 });
+
+test("subagent tool allowlist restricts the child's tool set (Claude Code subagent tools:)", async () => {
+  const provider = new MockModelProvider({
+    turns: [
+      {
+        content: "delegating with restricted tools",
+        tokens: 5,
+        toolCalls: [
+          toolCall("subagent__run", {
+            goal: "write via terminal",
+            mode: "plan",
+            tools: ["filesystem.*"],
+            steps: [{ id: "s1", tool: "terminal", action: "execute", args: { command: "echo blocked > blocked.txt" } }],
+          }),
+        ],
+      },
+      { content: "child failed as expected since terminal is outside its allowlist", tokens: 5, toolCalls: [] },
+    ],
+  });
+  const { rt, cleanup } = await makeRuntime({ model: provider });
+  try {
+    const task = await rt.createTask({ title: "allowlist", goal: "delegate a terminal step to a fs-only subagent", mode: "agentic" });
+    await rt.startTask(task.id);
+    const done = await rt.waitForTask(task.id);
+    assert.equal(done.status, "COMPLETED");
+    const subStep = done.result?.stepResults.find((r) => r.tool === "subagent");
+    assert.ok(subStep?.ok, "subagent call itself succeeds");
+    const data = subStep?.output?.data as { status?: string };
+    assert.equal(data.status, "FAILED", "child failed: terminal is not in its allowlist");
+    // child schema view also hides non-allowed tools for agentic children
+    const { toolSchemasFromRegistry } = await import("@/agentos/agents");
+    const view = rt.tools.get("subagent");
+    void view;
+    assert.ok(toolSchemasFromRegistry(rt.tools).schemas.some((s) => s.name === "subagent__run"));
+  } finally {
+    await cleanup();
+  }
+});

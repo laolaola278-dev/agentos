@@ -37,7 +37,7 @@ export class SubagentTool implements Tool {
     {
       name: "run",
       description: "Run an isolated sub-agent on a goal. In plan mode provide explicit steps; in agentic mode an LLM drives the child run.",
-      params: { goal: "string", mode: "plan|agentic?", instructions: "string?", steps: "any?", acceptance: "any?", maxToolCalls: "number?" },
+      params: { goal: "string", mode: "plan|agentic?", instructions: "string?", tools: "string[]?", steps: "any?", acceptance: "any?", maxToolCalls: "number?" },
     },
   ];
   private running = 0;
@@ -68,12 +68,15 @@ export class SubagentTool implements Tool {
 
     this.running++;
     const childDataDir = path.join(this.opts.dataDir, "subagents", `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
+    // tool allowlist (Claude Code subagent `tools:` semantics): the child only
+    // sees the allow-listed tools/actions; everything else is invisible
+    const toolAllowlist = Array.isArray(a.tools) ? (a.tools as string[]).filter((p) => typeof p === "string") : [];
     const child = await AgentRuntime.create({
       rootDir: this.opts.rootDir,
       dataDir: childDataDir,
       persistence: "memory",
       model: mode === "agentic" ? this.opts.model : null,
-      tools: this.opts.childRegistry(),
+      tools: this.opts.childRegistry().filteredView(toolAllowlist),
       concurrency: 1,
       controlPollMs: 0,
       sandbox: this.opts.sandbox,

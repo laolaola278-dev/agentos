@@ -45,7 +45,10 @@ Implement `Agent<I, O>` in `agents.ts`, run it via `runAgent()` (emits `agent.*`
   `ToolRegistry.execute` before hooks; `PERMISSION_DENIED` is a fatal code.
 - **Chat**: `chat.ts` — `chatTurn(rt, text, handlers, opts)` is the testable unit; `runChat` owns the readline loop and
   accepts injected `input`/`output` streams for tests (see tests/integration/chat-repl.test.ts). Note: pending
-  `rl.question()` never settles on EOF on current Node — always race questions against the closed signal.
+  `rl.question()` never settles on EOF on current Node — always race questions against the closed signal. Sessions
+  persist user/assistant turn pairs; `--resume` replays them as transcript messages via `TaskSpec.context`.
+- **Subagents**: `tools/subagent.ts` — child registries must be built WITHOUT the subagent tool (no recursion);
+  `ToolRegistry.filteredView(allowPatterns)` scopes a child's tool set.
 - **Skills**: `.agentos/skills/*.md` (frontmatter `name`/`description`); hostile patterns are rejected at load
   (`skills.rejected` event); injected section is capped — keep skill bodies tight (E1).
 - **Eval loop**: suites are JSON (`{name, cases:[{id, goal, acceptance?, verification?, budget?}]}`); the scorer is

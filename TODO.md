@@ -86,3 +86,12 @@
     [x] Task 13.7 Built-in eval preset: `core` suite (6 deterministic offline cases) via `agentos eval run --preset core`
     [x] Task 13.8 MCP Streamable HTTP transport: JSON-RPC over POST, JSON + SSE response parsing, Mcp-Session-Id
         carry-forward, custom headers; config mcpServers.<name>.transport=http + url/headers
+[x] Phase 14 Remaining-deficiency closure (all four audit leftovers)
+    [x] Task 14.1 Subagent tool allowlists: `tools` arg filters the child registry to allow-listed tools/actions
+        (ToolRegistry.filteredView); agentic children see only the allowed schemas, disallowed steps fail UNKNOWN_TOOL
+    [x] Task 14.2 Permission `ask` tier: precedence deny > ask > allow; ask forces the approval prompt even in auto
+        mode and fails closed without an approval channel (headless)
+    [x] Task 14.3 Transcript-level chat session resume: TaskSpec.context (≤20 user/assistant messages) seeded into the
+        agentic conversation; chat-session entries store the model's closing message; turns replay as real messages
+    [x] Task 14.4 MCP advanced session handling: 404 session-expiry → transparent re-initialize + request replay;
+        close() sends the spec DELETE termination; runtime.close() awaits MCP client shutdown

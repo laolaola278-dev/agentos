@@ -14,8 +14,10 @@ export interface PermissionGate {
 export interface PermissionPolicy {
   /** `tool`, `tool.*` or `tool.action` patterns always allowed without prompting. */
   allow: string[];
-  /** Deny patterns win over allow: the call is rejected without prompting. */
+  /** Deny patterns win over allow AND ask: the call is rejected without prompting. */
   deny: string[];
+  /** Ask rules force the approval prompt even in auto mode; without an approval channel they deny (fail-closed). */
+  ask: string[];
   /** Session-scoped allows appended at runtime (chat `/allow`). */
   sessionAllow: string[];
 }
@@ -118,7 +120,7 @@ export class ToolRegistry {
   private tools = new Map<string, Tool>();
   private hooks: HookRunner | null = null;
   private permissionGate: PermissionGate | null = null;
-  private permissionPolicy: PermissionPolicy = { allow: [], deny: [], sessionAllow: [] };
+  private permissionPolicy: PermissionPolicy = { allow: [], deny: [], ask: [], sessionAllow: [] };
 
   register(tool: Tool): this {
     if (this.tools.has(tool.name)) throw new Error(`tool already registered: ${tool.name}`);
@@ -140,7 +142,7 @@ export class ToolRegistry {
 
   /** Sets the allow/deny policy table (Claude Code permissions semantics: deny wins). */
   setPermissionPolicy(policy: Partial<PermissionPolicy>): this {
-    this.permissionPolicy = { allow: policy.allow ?? [], deny: policy.deny ?? [], sessionAllow: policy.sessionAllow ?? [] };
+    this.permissionPolicy = { allow: policy.allow ?? [], deny: policy.deny ?? [], ask: policy.ask ?? [], sessionAllow: policy.sessionAllow ?? [] };
     return this;
   }
 
@@ -152,7 +154,24 @@ export class ToolRegistry {
   }
 
   get permissionPolicySnapshot(): PermissionPolicy {
-    return { ...this.permissionPolicy, allow: [...this.permissionPolicy.allow], deny: [...this.permissionPolicy.deny], sessionAllow: [...this.permissionPolicy.sessionAllow] };
+    return { ...this.permissionPolicy, allow: [...this.permissionPolicy.allow], deny: [...this.permissionPolicy.deny], ask: [...this.permissionPolicy.ask], sessionAllow: [...this.permissionPolicy.sessionAllow] };
+  }
+
+  /**
+   * Builds a filtered VIEW of this registry containing only tools/actions matching
+   * the allow patterns (subagent tool allowlists, Claude Code subagent `tools:`).
+   * The returned registry shares the underlying execute implementations.
+   */
+  filteredView(allow: string[]): ToolRegistry {
+    if (!allow.length) return this;
+    const filtered = new ToolRegistry();
+    for (const t of this.list()) {
+      const actions = t.actions.filter((a) => allow.some((p) => matchToolPattern(p, t.name, a.name)));
+      if (!actions.length) continue;
+      const full = this.tools.get(t.name)!;
+      filtered.register({ name: t.name, description: t.description, actions, execute: (input, ctx) => full.execute(input, ctx) });
+    }
+    return filtered;
   }
 
   get(name: string): Tool | undefined {
@@ -202,8 +221,10 @@ export class ToolRegistry {
       return output;
     }
 
-    // permission policy (config `permissions.allow/deny`): deny wins over allow,
-    // an explicit allow skips the interactive confirm gate entirely
+    // permission policy (config `permissions.*`): precedence deny > ask > allow.
+    // Deny rejects outright; an explicit allow skips the interactive gate; an ask
+    // rule FORCES the approval prompt even in auto mode — and with no approval
+    // channel available (headless) it fails closed.
     const policy = this.permissionPolicy;
     if (policy.deny.some((p) => matchToolPattern(p, toolName, input.action))) {
       const output = finish({ ok: false, error: { code: "PERMISSION_DENIED", message: `${toolName}.${input.action} is denied by the permission policy`, retryable: false } });
@@ -211,16 +232,21 @@ export class ToolRegistry {
       return output;
     }
     const policyAllowed = policy.allow.some((p) => matchToolPattern(p, toolName, input.action)) || policy.sessionAllow.some((p) => matchToolPattern(p, toolName, input.action));
-
-    // human-in-the-loop: confirm mode asks before every execution; a failed prompt denies (fail-closed)
-    if (this.permissionGate?.mode === "confirm" && !policyAllowed) {
-      let allowed = false;
-      try {
-        allowed = await this.permissionGate.request({ taskId: opts.taskId, tool: toolName, action: input.action, args: input.args });
-      } catch {
-        allowed = false;
+    const policyAsk = !policyAllowed && policy.ask.some((p) => matchToolPattern(p, toolName, input.action));
+    const needsPrompt = policyAsk || (this.permissionGate?.mode === "confirm" && !policyAllowed);
+    if (needsPrompt) {
+      if (!this.permissionGate) {
+        const output = finish({ ok: false, error: { code: "PERMISSION_DENIED", message: `${toolName}.${input.action} requires approval (permissions.ask) but no approval channel is available`, retryable: false } });
+        await bus?.emit({ ...base, type: "tool.failed", args: input, error: `${output.error!.code}: ${output.error!.message}`, durationMs: output.durationMs });
+        return output;
       }
-      if (!allowed) {
+      let approved = false;
+      try {
+        approved = await this.permissionGate.request({ taskId: opts.taskId, tool: toolName, action: input.action, args: input.args });
+      } catch {
+        approved = false;
+      }
+      if (!approved) {
         const output = finish({ ok: false, error: { code: "PERMISSION_DENIED", message: `user denied ${toolName}.${input.action}`, retryable: false } });
         await bus?.emit({ ...base, type: "tool.failed", args: input, error: `${output.error!.code}: ${output.error!.message}`, durationMs: output.durationMs });
         return output;

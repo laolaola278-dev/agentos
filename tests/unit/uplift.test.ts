@@ -310,3 +310,65 @@ test("denied tools/actions are hidden from the model's tool schemas (Claude Code
   assert.ok(schemas.some((s) => s.name === "alpha__read"), "other actions stay");
   assert.equal(resolve("beta__ping"), null);
 });
+
+// ---- permissions.ask tier (deny > ask > allow) ----
+
+test("ask rules force the prompt even in auto mode; approval lets it through", async () => {
+  const registry = new ToolRegistry().register({
+    name: "probe",
+    description: "probe",
+    actions: [{ name: "deploy", description: "deploy", params: {} }, { name: "ping", description: "ping", params: {} }],
+    async execute() {
+      return { done: true };
+    },
+  });
+  let prompts = 0;
+  registry.setPermissionPolicy({ ask: ["probe.deploy"] });
+  registry.setPermissionGate({ mode: "auto", request: async () => (prompts++, true) }); // auto mode + gate
+  const out = await registry.execute("probe", { action: "deploy", args: {} }, { taskId: "t", agentId: "test", workdir: "." });
+  assert.equal(out.ok, true, "approved ask-rule call runs");
+  assert.equal(prompts, 1, "ask rule forced a prompt despite auto mode");
+  const ping = await registry.execute("probe", { action: "ping", args: {} }, { taskId: "t", agentId: "test", workdir: "." });
+  assert.equal(ping.ok, true);
+  assert.equal(prompts, 1, "non-ask call never prompts in auto mode");
+});
+
+test("ask rules deny when the prompt is refused or no channel exists", async () => {
+  const makeRegistry = () => new ToolRegistry().register({
+    name: "probe",
+    description: "probe",
+    actions: [{ name: "deploy", description: "deploy", params: {} }],
+    async execute() {
+      return { done: true };
+    },
+  });
+  const refused = makeRegistry();
+  refused.setPermissionPolicy({ ask: ["probe.deploy"] });
+  refused.setPermissionGate({ mode: "auto", request: async () => false });
+  const denied = await refused.execute("probe", { action: "deploy", args: {} }, { taskId: "t", agentId: "test", workdir: "." });
+  assert.equal(denied.error?.code, "PERMISSION_DENIED");
+  // headless: no gate at all → fail closed
+  const headless = makeRegistry();
+  headless.setPermissionPolicy({ ask: ["probe.deploy"] });
+  const out = await headless.execute("probe", { action: "deploy", args: {} }, { taskId: "t", agentId: "test", workdir: "." });
+  assert.equal(out.error?.code, "PERMISSION_DENIED");
+  assert.match(out.error?.message ?? "", /no approval channel/);
+  // precedence: deny wins over ask
+  const both = makeRegistry();
+  both.setPermissionPolicy({ ask: ["probe.deploy"], deny: ["probe.deploy"] });
+  let prompts = 0;
+  both.setPermissionGate({ mode: "auto", request: async () => (prompts++, true) });
+  const out2 = await both.execute("probe", { action: "deploy", args: {} }, { taskId: "t", agentId: "test", workdir: "." });
+  assert.equal(out2.error?.code, "PERMISSION_DENIED");
+  assert.equal(prompts, 0, "deny rejects without prompting");
+  // allow beats ask
+  const allowWins = makeRegistry();
+  allowWins.setPermissionPolicy({ ask: ["probe.deploy"], allow: ["probe.deploy"] });
+  allowWins.setPermissionGate({ mode: "auto", request: async () => (prompts++, true) });
+  const out3 = await allowWins.execute("probe", { action: "deploy", args: {} }, { taskId: "t", agentId: "test", workdir: "." });
+  assert.equal(out3.ok, true);
+  assert.equal(prompts, 0);
+  // config validation
+  assert.throws(() => validateAgentOsConfig({ permissions: { ask: ["bad!"] } }), /patterns/);
+  assert.deepEqual(validateAgentOsConfig({ permissions: { ask: ["terminal.execute"] } }).permissions?.ask, ["terminal.execute"]);
+});

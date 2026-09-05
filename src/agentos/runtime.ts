@@ -119,6 +119,15 @@ export function normalizeTaskSpec(input: TaskSpec, rootDir: string, defaultBudge
   const tags = input.tags === undefined ? undefined : [...new Set(input.tags.filter((t): t is string => typeof t === "string" && !!t.trim()).map((t) => t.trim()))];
   if (tags && tags.length > MAX_TAGS) throw new AgentOSError("INVALID_SPEC", `too many tags (max ${MAX_TAGS})`);
   if (input.mode !== undefined && input.mode !== "plan" && input.mode !== "agentic") throw new AgentOSError("INVALID_SPEC", 'mode must be "plan" or "agentic"');
+  if (input.context !== undefined) {
+    if (!Array.isArray(input.context) || input.context.length > 20) throw new AgentOSError("INVALID_SPEC", "context must be an array of at most 20 messages");
+    for (const m of input.context) {
+      if (!m || typeof m !== "object" || (m.role !== "user" && m.role !== "assistant") || typeof m.content !== "string") {
+        throw new AgentOSError("INVALID_SPEC", "context messages must be {role: user|assistant, content: string}");
+      }
+      if (m.content.length > 8000) throw new AgentOSError("INVALID_SPEC", "context message content exceeds 8000 chars");
+    }
+  }
 
   return {
     ...structuredClone(input),
@@ -744,7 +753,7 @@ export class AgentRuntime {
     this.closed = true;
     if (this.controlTimer) clearInterval(this.controlTimer);
     this.stopDaemon();
-    for (const client of this.mcpClients.values()) client.close();
+    await Promise.all([...this.mcpClients.values()].map((client) => client.close()));
     this.mcpClients.clear();
     for (const entry of this.running.values()) entry.controller.abort("pause");
     await Promise.allSettled([...this.running.values()].map((e) => e.promise));

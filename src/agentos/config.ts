@@ -62,8 +62,10 @@ export interface AgenticConfig {
 export interface PermissionsConfig {
   /** `tool`, `tool.*` or `tool.action` patterns always allowed (skip confirm prompts). */
   allow?: string[];
-  /** Deny wins over allow: matching calls are rejected without prompting. */
+  /** Deny wins over allow AND ask: matching calls are rejected without prompting. */
   deny?: string[];
+  /** Ask rules force the approval prompt even in auto mode (fail-closed headless). */
+  ask?: string[];
 }
 
 export interface AgentOsConfig {
@@ -191,13 +193,13 @@ export function validateAgentOsConfig(input: unknown): AgentOsConfig {
   if (src.permissions !== undefined) {
     if (typeof src.permissions !== "object" || src.permissions === null || Array.isArray(src.permissions)) throw new Error("permissions must be an object");
     const patternRe = /^(\*|[a-zA-Z0-9_-]+(\.\*|\.[a-zA-Z0-9_-]+)?)$/;
-    const { allow, deny } = src.permissions as Record<string, unknown>;
-    for (const [key, list] of [["allow", allow], ["deny", deny]] as const) {
+    const { allow, deny, ask } = src.permissions as Record<string, unknown>;
+    for (const [key, list] of [["allow", allow], ["deny", deny], ["ask", ask]] as const) {
       if (list !== undefined && (!Array.isArray(list) || list.some((p) => typeof p !== "string" || !patternRe.test(p)))) {
         throw new Error(`permissions.${key} must be an array of "*", "tool" or "tool.action" patterns`);
       }
     }
-    out.permissions = { allow: allow as string[] | undefined, deny: deny as string[] | undefined };
+    out.permissions = { allow: allow as string[] | undefined, deny: deny as string[] | undefined, ask: ask as string[] | undefined };
   }
 
   if (src.agentic !== undefined) {

@@ -108,3 +108,78 @@ test("MCP http transport validation: url required", async () => {
   }
   void fsp;
 });
+
+test("MCP http session: 404 expiry triggers transparent re-initialize; close sends DELETE", async () => {
+  let validSession = "sess-A";
+  let sawDelete = false;
+  let sessionsIssued = 0;
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      if (req.method === "DELETE") {
+        sawDelete = true;
+        res.writeHead(200);
+        res.end();
+        return;
+      }
+      const msg = JSON.parse(body || "{}") as { id?: number; method?: string };
+      const reply = (result: unknown) => {
+        const payload = JSON.stringify({ jsonrpc: "2.0", id: msg.id, result });
+        res.writeHead(200, { "content-type": "application/json", "mcp-session-id": validSession });
+        res.end(payload);
+      };
+      // an expired session (not the currently valid one) on a tools/call → 404 per spec
+      if (req.method === "POST" && msg.method === "tools/call" && req.headers["mcp-session-id"] !== validSession) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      switch (msg.method) {
+        case "initialize":
+          sessionsIssued++;
+          validSession = `sess-${sessionsIssued}`;
+          reply({ protocolVersion: "2024-11-05", serverInfo: { name: "exp-mcp", version: "0.1.0" } });
+          break;
+        case "notifications/initialized":
+          reply(undefined as never);
+          break;
+        case "tools/list":
+          reply({ tools: [{ name: "ping", description: "pings", inputSchema: { type: "object", properties: {} } }] });
+          break;
+        case "tools/call":
+          reply({ content: [{ type: "text", text: "pong" }] });
+          break;
+        default:
+          reply({ error: { code: -32601, message: "not found" } });
+      }
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const addr = server.address() as { port: number };
+  const dir = await tmpDir("agentos-mcp-exp-");
+  const rt = await AgentRuntime.create({
+    rootDir: dir,
+    dataDir: path.join(dir, ".agentos"),
+    persistence: "memory",
+    model: null,
+    controlPollMs: 0,
+    config: { mcpServers: { exp: { transport: "http", url: `http://127.0.0.1:${addr.port}/mcp` } } },
+  });
+  try {
+    assert.ok(rt.tools.get("mcp_exp_ping"));
+    // server expires sess-A after registration → first tools/call gets 404 → transparent re-init
+    validSession = "sess-expired";
+    const task = await rt.createTask({ title: "expiry", goal: "n/a", steps: [{ id: "s1", tool: "mcp_exp_ping", action: "call", args: {} }] });
+    await rt.startTask(task.id);
+    const done = await rt.waitForTask(task.id);
+    assert.equal(done.status, "COMPLETED", done.error);
+    assert.match(JSON.stringify(done.result?.stepResults.find((r) => r.stepId === "s1")?.output?.data), /pong/, "call succeeded after session re-initialize");
+    assert.ok(sessionsIssued >= 2, `re-initialize happened (${sessionsIssued} sessions)`);
+  } finally {
+    await rt.close();
+    await new Promise<void>((r) => server.close(() => r()));
+    await rmRetry(dir);
+  }
+  assert.equal(sawDelete, true, "close() sent the session-termination DELETE");
+});
