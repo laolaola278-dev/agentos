@@ -10,7 +10,6 @@ import { VerificationEngine } from "./verification";
 import { TaskQueue } from "./queue";
 import { Orchestrator } from "./orchestrator";
 import { MetricsCollector } from "./metrics";
-import { createModelProviderFromEnv } from "./model";
 import { AGENT_CATALOG } from "./agents";
 import { getGitState } from "./tools/git";
 import { resolveSafePath } from "./security";
@@ -18,6 +17,9 @@ import { loadAgentOsConfig, type AgentOsConfig } from "./config";
 import { HookRunner } from "./hooks";
 import { registerMcpTools, type McpClient, type McpRegistration } from "./mcp";
 import type { PermissionMode, PermissionRequest } from "./types";
+import { loadVault, type SecretVault } from "./secrets";
+import { normalizeSandboxConfig, type SandboxConfig } from "./sandbox";
+import { resolveProviderSettings, createProviderFromSettings, type ResolvedProviderSettings } from "./providers";
 
 export type PersistenceKind = "memory" | "file" | "sqlite";
 
@@ -44,6 +46,10 @@ export interface RuntimeOptions {
   permissionMode?: PermissionMode;
   /** Async approval callback used when `permissionMode: "confirm"`. */
   onPermissionRequest?: (req: PermissionRequest) => Promise<boolean>;
+  /** Sandbox tier for shell commands. `undefined` resolves from config/env, `false` disables. */
+  sandbox?: SandboxConfig | false;
+  /** Secret vault. `undefined` loads `<dataDir>/secrets.json` when present; `false`/`null` disable. */
+  secrets?: SecretVault | null | false;
 }
 
 interface RunningEntry {
@@ -163,6 +169,10 @@ export class AgentRuntime {
   readonly model: ModelProvider | null;
   readonly concurrency: number;
   readonly config: AgentOsConfig;
+  readonly secrets: SecretVault | null;
+  readonly sandbox: SandboxConfig;
+  /** Resolved provider settings (profile, key source) for introspection — never the key value. */
+  providerSettings: ResolvedProviderSettings | null = null;
   readonly mcpClients = new Map<string, McpClient>();
   mcpRegistrations: McpRegistration[] = [];
   private hooks: HookRunner | null = null;
@@ -180,15 +190,18 @@ export class AgentRuntime {
     this.dataDir = path.resolve(opts.dataDir ?? path.join(this.rootDir, ".agentos"));
     this.persistence = persistence;
     this.bus = new EventBus(persistence, { jsonlMirror: opts.jsonlMirror ? path.join(this.dataDir, "events.jsonl") : undefined });
-    const created = createDefaultToolRegistry({ allowDangerous: opts.allowDangerousCommands, shell: opts.shell });
+    this.model = opts.model ?? null;
+    this.config = opts.config ?? {};
+    this.secrets = opts.secrets === false || opts.secrets === null ? null : opts.secrets ?? null;
+    this.sandbox = normalizeSandboxConfig(opts.sandbox === false ? undefined : opts.sandbox);
+    const created = createDefaultToolRegistry({ allowDangerous: opts.allowDangerousCommands, shell: opts.shell, sandbox: this.sandbox.mode !== "none" ? this.sandbox : undefined });
     this.tools = opts.tools ?? created.registry;
     this.processes = created.processes;
-    this.model = opts.model === undefined ? createModelProviderFromEnv() : opts.model;
     this.concurrency = Math.max(1, opts.concurrency ?? 2);
-    this.config = opts.config ?? {};
     this.defaultBudget = { ...DEFAULT_BUDGET, ...(opts.defaultBudget ?? {}) };
     this.orchestrator = new Orchestrator({ persistence, bus: this.bus, tools: this.tools, verification: this.verification, model: this.model, dataDir: this.dataDir, heartbeatMs: opts.heartbeatMs, shell: opts.shell });
     this.metrics.attach(this.bus);
+    if (this.sandbox.mode !== "none") this.verification.setSandbox(this.sandbox);
     if (this.config.hooks && Object.keys(this.config.hooks).length > 0) {
       this.hooks = new HookRunner(this.config.hooks, { rootDir: this.rootDir, bus: this.bus, shell: opts.shell });
       this.tools.setHooks(this.hooks);
@@ -215,7 +228,17 @@ export class AgentRuntime {
     await persistence.init();
     await excludeDataDirFromGit(rootDir, dataDir);
     const config = opts.config === undefined ? await loadAgentOsConfig(dataDir) : opts.config;
-    const rt = new AgentRuntime({ ...opts, rootDir, dataDir, config }, persistence);
+    const vault = opts.secrets === undefined ? await loadVault(dataDir) : opts.secrets || null;
+    const sandbox = opts.sandbox === false ? undefined : opts.sandbox ?? config?.sandbox ?? (process.env.AGENTOS_SANDBOX ? normalizeSandboxConfig(process.env.AGENTOS_SANDBOX) : undefined);
+    let model = opts.model;
+    let providerSettings: ResolvedProviderSettings | null = null;
+    if (model === undefined) {
+      // profile-based resolution (config.llm → env → vault); null = deterministic mode
+      providerSettings = await resolveProviderSettings({ env: process.env, vault, llm: config?.llm });
+      model = providerSettings ? createProviderFromSettings(providerSettings) : null;
+    }
+    const rt = new AgentRuntime({ ...opts, rootDir, dataDir, config, secrets: vault, sandbox, model }, persistence);
+    rt.providerSettings = providerSettings;
     if (config?.mcpServers && Object.keys(config.mcpServers).length > 0) {
       try {
         rt.mcpRegistrations = await registerMcpTools(rt.tools, config.mcpServers, {
@@ -641,6 +664,16 @@ export class AgentRuntime {
       checks.push({ name: "shell", ok: false, detail: err instanceof Error ? err.message : String(err) });
     }
     checks.push({ name: "model", ok: true, detail: this.model ? `provider ${this.model.name}${this.model.completeWithTools ? " (tool calling supported)" : ""}` : "no LLM configured — deterministic planner only (set LLM_API_KEY to enable)" });
+    const ps = this.providerSettings;
+    checks.push({
+      name: "provider",
+      ok: true,
+      detail: ps
+        ? `profile ${ps.profile.id} (${ps.profile.label}) key=${ps.keySource} streaming=${ps.quirks.toolStreaming} jsonMode=${ps.quirks.jsonMode}`
+        : "no provider profile resolved (legacy env path or deterministic mode)",
+    });
+    checks.push({ name: "sandbox", ok: true, detail: this.sandbox.mode === "none" ? "none (policy + workspace guard only; set sandbox.mode=container for isolation)" : `${this.sandbox.mode} (image=${this.sandbox.image ?? "alpine:3"} mem=${this.sandbox.memoryMb}m network=${this.sandbox.network ? "on" : "none"})` });
+    checks.push({ name: "secrets", ok: true, detail: this.secrets ? `vault at ${this.secrets.file} (${(await this.secrets.list()).length} entr${(await this.secrets.list()).length === 1 ? "y" : "ies"})` : "no vault (.agentos/secrets.json absent; `agentos secrets set` creates it)" });
     const hookCount = Object.values(this.config.hooks ?? {}).reduce((n, l) => n + (l?.length ?? 0), 0);
     checks.push({ name: "hooks", ok: true, detail: hookCount ? `${hookCount} hook(s) from .agentos/config.json` : "no hooks configured (.agentos/config.json)" });
     const mcpTools = this.tools.list().filter((t) => t.name.startsWith("mcp_"));

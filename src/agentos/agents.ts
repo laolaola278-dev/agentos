@@ -25,7 +25,7 @@ import { AgentOSError, BudgetExceededError, nowIso } from "./types";
 import type { ToolRegistry } from "./tools/registry";
 import type { EventBus } from "./events";
 import type { VerificationEngine } from "./verification";
-import { extractJson } from "./model";
+import { extractJson, repairToolArguments } from "./model";
 import { redactString } from "./security";
 import { getGitState, runGit } from "./tools/git";
 
@@ -533,6 +533,10 @@ export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
     if (schemas.length === 0) throw new AgentOSError("NO_TOOLS", "agentic mode requires at least one registered tool");
     const goal = ctx.task.spec.goal?.trim() || ctx.task.spec.title;
     const instructions = await readProjectInstructions(ctx.workdir);
+    const maxTurnTokens = ctx.model.quirks?.maxTokens ?? 8192;
+    // some providers / reverse proxies do not stream tool_calls deltas correctly —
+    // quirks.toolStreaming=false falls back to non-streaming tool calling
+    const toolStreaming = ctx.model.quirks?.toolStreaming !== false;
     const conversation: Message[] = [
       {
         role: "system",
@@ -559,8 +563,8 @@ export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
       turns++;
       let completion: ModelToolCompletion | null = null;
       // streaming path: text deltas fan out live as transient model.delta events
-      if (ctx.model.stream) {
-        for await (const ev of ctx.model.stream(trimConversation(conversation), { tools: schemas, signal: ctx.signal, maxTokens: 8192 })) {
+      if (toolStreaming && ctx.model.stream) {
+        for await (const ev of ctx.model.stream(trimConversation(conversation), { tools: schemas, signal: ctx.signal, maxTokens: maxTurnTokens })) {
           if (ev.delta) {
             await ctx.bus.emit({ taskId: ctx.task.id, agentId: "executor", type: "model.delta", transient: true, data: { turn: turns, text: ev.delta } });
           }
@@ -568,9 +572,12 @@ export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
         }
         if (!completion) throw new AgentOSError("MODEL_EMPTY_RESPONSE", "model stream ended without a completion", { retryable: true });
       } else {
-        completion = await ctx.model.completeWithTools(trimConversation(conversation), schemas, { signal: ctx.signal, maxTokens: 8192 });
+        completion = await ctx.model.completeWithTools(trimConversation(conversation), schemas, { signal: ctx.signal, maxTokens: maxTurnTokens });
       }
       ctx.budget.consumeTokens(completion.tokens);
+      if (completion.finishReason === "length") {
+        await ctx.bus.emit({ taskId: ctx.task.id, agentId: "executor", type: "model.truncated", data: { turn: turns, toolCalls: completion.toolCalls.length }, error: "model hit the completion token limit" });
+      }
       await ctx.bus.emit({ taskId: ctx.task.id, agentId: "executor", type: "model.completed", data: { agent: "executor", tokens: completion.tokens, provider: ctx.model.name, turn: turns, toolCalls: completion.toolCalls.length, streamed: !!ctx.model.stream } });
       if (!completion.toolCalls.length) {
         finalMessage = completion.content.trim();
@@ -584,10 +591,16 @@ export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
         const target = resolve(call.name);
         let args: Record<string, unknown> = {};
         let parseError: string | undefined;
-        try {
-          args = call.arguments.trim() ? (JSON.parse(call.arguments) as Record<string, unknown>) : {};
-        } catch (err) {
-          parseError = `invalid JSON arguments: ${err instanceof Error ? err.message : String(err)}`;
+        // models emit malformed JSON arguments more often than anyone would like:
+        // repair fences / smart quotes / trailing commas / unbalanced closers first
+        for (const candidate of [call.arguments, repairToolArguments(call.arguments)]) {
+          try {
+            args = candidate.trim() ? (JSON.parse(candidate) as Record<string, unknown>) : {};
+            parseError = undefined;
+            break;
+          } catch (err) {
+            parseError = `invalid JSON arguments: ${err instanceof Error ? err.message : String(err)}`;
+          }
         }
         let result: StepResult;
         if (!target || parseError) {

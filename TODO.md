@@ -47,3 +47,11 @@
         toggles + unknown command + EOF exit, confirm-mode denial (y then n)
     [x] Task 10.4 AGENTS.md → agentic system prompt injection locked by an integration test
     [x] Task 10.5 Doc drift: filesystem is 14 actions (apply_patch/patch existed since baseline) — API.md/ARCHITECTURE/FINAL-REPORT corrected
+[x] Phase 11 Hardening round (sandbox, secrets vault, provider profiles)
+    [x] Task 11.1 sandbox.ts: none/process/container tiers; container = ephemeral Docker (no network, dropped caps,
+        mem/cpu/pids caps, workspace at /workspace, stdin preserved via mounted run-script); fails closed by default
+    [x] Task 11.2 secrets.ts: AES-256-GCM vault + `agentos secrets` CLI + key resolution (named vault entry → env → default)
+    [x] Task 11.3 providers.ts: provider profiles incl. GitHub Models gateway, DeepSeek, GLM, Ollama, custom reverse
+        proxies; quirk adaptation (tool-call streaming on/off) + malformed tool-argument repair + model.truncated events
+    [x] Task 11.4 doctor reports provider profile, sandbox tier, vault entries (names only)
+    [x] Task 11.5 Tests: 126 total (container tier gated on a reachable Docker daemon)

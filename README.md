@@ -55,6 +55,79 @@ wire their own approval UI through runtime options:
 const rt = await AgentRuntime.create({ permissionMode: "confirm", onPermissionRequest: async (req) => approve(req) });
 ```
 
+## Sandbox tiers
+
+Shell commands (terminal tool + verification engine) can run inside a pluggable sandbox:
+
+```bash
+export AGENTOS_SANDBOX=container       # or "process" / "none" (default)
+# or in .agentos/config.json:
+{ "sandbox": { "mode": "container", "image": "alpine:3", "memoryMb": 512, "cpus": 1, "network": false } }
+```
+
+- `container` — every command runs in an ephemeral Docker container: workspace mounted at `/workspace`, **no network**,
+  dropped capabilities, memory/cpu/pids caps. Requires a reachable Docker daemon (`sandbox.onUnavailable: "degrade"`
+  falls back to unsandboxed instead of failing).
+- `process` — POSIX `ulimit` vmem/pid caps layered onto the command (degrades on Windows).
+- `none` — policy-only (deny-list + workspace path guard), the historic default.
+
+The sandbox complements the command policy; it contains accidents, not adversaries (see SECURITY.md).
+
+## Secrets vault (API keys)
+
+Store provider keys encrypted at rest instead of env vars:
+
+```bash
+agentos secrets set LLM_API_KEY        # value from --value or piped stdin
+agentos secrets list                   # names only
+agentos secrets get LLM_API_KEY        # masked; add --show to reveal
+agentos secrets delete LLM_API_KEY
+```
+
+`.agentos/secrets.json` is AES-256-GCM encrypted; the master key lives in `.agentos/secret.key` (0600) or
+`AGENTOS_SECRET_KEY` (64 hex chars). The runtime auto-loads the vault and resolves keys in this order:
+`config.llm.apiKeySecret` (vault) → provider env vars → vault default entry. `agentos doctor` shows what it resolved
+(names only, never values).
+
+## Provider profiles (GitHub Models, DeepSeek, GLM, Ollama, reverse proxies)
+
+Instead of hand-configuring `LLM_BASE_URL`, pick a profile — it sets the endpoint, default model, key env names and
+**compatibility quirks** (streaming tool-calls support, JSON mode) that the harness adapts to:
+
+```json
+{ "llm": { "provider": "github-models", "model": "openai/gpt-4o-mini" } }
+```
+
+- `github-models` — GitHub's hosted model gateway (`https://models.github.ai/inference`, key: `GITHUB_TOKEN`)
+- `deepseek` / `glm` — official OpenAI-compatible endpoints (tool-call **streaming disabled** by default — their
+  SSE `tool_calls` deltas are unreliable; the agentic loop falls back to non-streaming tool calling automatically)
+- `ollama` — local runtime, keyless
+- `custom` — your own OpenAI-compatible reverse proxy: set `baseUrl` + `apiKeySecret` (a vault entry), and
+  `toolStreaming: false` when the proxy does not stream tool calls correctly
+
+The harness also **repairs** malformed tool-call JSON (markdown fences, smart quotes, trailing commas, unbalanced
+closers) before feeding errors back to the model, and emits `model.truncated` when a provider cuts a turn off at the
+token limit. These profiles adapt to provider quirks — they do not bypass payment, authentication or rate limits.
+
+Lifecycle hooks in the style of Claude Code: a JSON payload describing the event goes to the hook command's stdin;
+environment carries `AGENTOS_HOOK_EVENT` / `AGENTOS_TOOL` / `AGENTOS_ACTION` / `AGENTOS_TASK_ID`.
+
+| event | exit code 2 | other non-zero |
+|---|---|---|
+| `pre_tool_call` | **blocks the tool call** (`HOOK_BLOCKED`, stderr is the reason) | recorded, non-blocking |
+| `post_tool_call` | non-blocking | recorded, non-blocking |
+| `task_completed` / `task_failed` | non-blocking | recorded, non-blocking |
+
+```json
+{
+  "hooks": {
+    "pre_tool_call": [{ "match": "terminal.*", "command": "node scripts/guard-terminal.js" }],
+    "post_tool_call": [{ "match": "filesystem.write", "command": "node scripts/audit-write.js" }],
+    "task_completed": [{ "command": "node scripts/notify.js" }]
+  }
+}
+```
+
 ## Hooks (`.agentos/config.json`)
 
 Lifecycle hooks in the style of Claude Code: a JSON payload describing the event goes to the hook command's stdin;

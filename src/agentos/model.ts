@@ -263,9 +263,56 @@ export function createModelProviderFromEnv(env: NodeJS.ProcessEnv = process.env)
   });
 }
 
+/**
+ * Repairs the common malformed-JSON shapes models emit in tool-call arguments:
+ * markdown fences, smart quotes, trailing commas, and unbalanced closers.
+ * Returns the original string when nothing can be salvaged.
+ */
+export function repairToolArguments(raw: string): string {
+  let s = raw.trim();
+  if (!s) return s;
+  const fenced = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced) s = fenced[1].trim();
+  s = s.replace(/[\u201c\u201d]/g, '"').replace(/[\u2018\u2019]/g, "'");
+  s = s.replace(/,\s*([}\]])/g, "$1");
+  if (/^[{[]/.test(s)) s = balanceJson(s);
+  return s;
+}
+
+/** Appends missing closers and drops dangling garbage after the first balanced value. */
+export function balanceJson(s: string): string {
+  const start = s.search(/[{[]/);
+  if (start < 0) return s;
+  let inString = false;
+  let escaped = false;
+  const stack: string[] = [];
+  let end = -1;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{" || ch === "[") stack.push(ch);
+    else if (ch === "}" || ch === "]") {
+      const expected = ch === "}" ? "{" : "[";
+      if (stack.pop() !== expected) return s; // crossed closers — not repairable
+      if (stack.length === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  if (end >= 0) return s.slice(start, end + 1);
+  if (inString) s = `${s}"`; // unterminated string: close it and retry once
+  return s + [...stack].reverse().map((c) => (c === "{" ? "}" : "]")).join("");
+}
+
 /** Extracts the first JSON object/array from a model response. */
-export function extractJson<T = unknown>(text: string): T {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+export function extractJson<T = unknown>(text: string): T {  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fenced ? fenced[1] : text;
   for (let start = 0; start < candidate.length; start++) {
     if (candidate[start] !== "{" && candidate[start] !== "[") continue;

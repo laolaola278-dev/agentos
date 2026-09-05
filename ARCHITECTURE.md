@@ -42,6 +42,9 @@
 | `hooks.ts` | `HookRunner`: runs `pre_tool_call` / `post_tool_call` / `task_completed` / `task_failed` hooks (Claude Code semantics: exit 2 blocks); payload via stdin, redacted |
 | `mcp.ts` | Minimal MCP stdio client (JSON-RPC over newline-delimited stdio): initialize → tools/list → tools/call; registers each MCP tool as a registry tool `mcp_<server>_<tool>` |
 | `chat.ts` | Interactive REPL (`agentos chat`): goals → agentic tasks with live streamed output, permission prompts, Ctrl-C cancels the running task; `chatTurn()` is the testable core |
+| `sandbox.ts` | Pluggable sandbox tiers for shell commands: `none` / `process` (POSIX ulimit caps) / `container` (ephemeral Docker: workspace at `/workspace`, no network, dropped caps, mem/cpu/pids limits); script-file mounting keeps stdin usable; fails closed or degrades per config |
+| `secrets.ts` | Encrypted local vault (`.agentos/secrets.json`, AES-256-GCM; master key in `.agentos/secret.key` 0600 or `AGENTOS_SECRET_KEY`); CLI `agentos secrets`; names only in diagnostics |
+| `providers.ts` | Provider profiles (openai / github-models / deepseek / glm / ollama / custom reverse proxy): baseUrl, model, key env names, compatibility quirks (tool-call streaming, JSON mode, maxTokens); key resolution config.llm.apiKeySecret → env → vault |
 | `cli.ts` | Command line interface |
 | `server.ts` | Next.js server singleton (PG persistence, auto-recover, daemon) |
 

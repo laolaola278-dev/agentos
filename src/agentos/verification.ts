@@ -5,6 +5,7 @@ import type { AcceptanceCheck, AcceptanceResult, VerificationKind, VerificationR
 import { runCommand } from "./tools/terminal";
 import type { EventBus } from "./events";
 import { resolveSafePath, redactString } from "./security";
+import { planSandboxedCommand, type SandboxConfig } from "./sandbox";
 
 export const VERIFICATION_PRESETS: Record<Exclude<VerificationKind, "custom">, string> = {
   unit: "npm test",
@@ -26,6 +27,8 @@ export interface VerifyOptions {
   shell?: string;
   /** Stop after the first failed check (default false for complete evidence). */
   failFast?: boolean;
+  /** Sandbox tier applied to verification commands. */
+  sandbox?: SandboxConfig;
 }
 
 /**
@@ -33,6 +36,14 @@ export interface VerifyOptions {
  * and returns structured evidence. Agents may not declare success without a passing VerificationResult.
  */
 export class VerificationEngine {
+  private sandbox?: SandboxConfig;
+
+  /** Sets a default sandbox tier for every verification command (per-call opts still win). */
+  setSandbox(sandbox?: SandboxConfig): this {
+    this.sandbox = sandbox;
+    return this;
+  }
+
   async run(spec: VerificationSpec, opts: VerifyOptions): Promise<VerificationResult> {
     const command = spec.command || (spec.kind !== "custom" ? presetFor(spec.kind, opts.workdir) : "");
     const cwd = spec.cwd ? resolveSafePath(opts.workdir, spec.cwd) : opts.workdir;
@@ -43,8 +54,11 @@ export class VerificationEngine {
     if (!command) {
       result = { name: spec.name, kind: spec.kind, command, passed: false, exitCode: null, stdout: "", stderr: "no command configured", durationMs: 0, artifacts: [], timedOut: false };
     } else {
+      const plan = opts.sandbox ?? this.sandbox
+        ? await planSandboxedCommand(command, { workdir: cwd, cfg: (opts.sandbox ?? this.sandbox)! })
+        : { command, cleanup: async () => undefined, mode: "none" as const };
       try {
-        const r = await runCommand(command, { cwd, timeoutMs, signal: opts.signal, maxOutputBytes: 512 * 1024, shell: opts.shell });
+        const r = await runCommand(plan.command, { cwd, timeoutMs, signal: opts.signal, maxOutputBytes: 512 * 1024, shell: opts.shell });
         result = {
           name: spec.name,
           kind: spec.kind,
@@ -59,6 +73,8 @@ export class VerificationEngine {
         };
       } catch (err) {
         result = { name: spec.name, kind: spec.kind, command, passed: false, exitCode: null, stdout: "", stderr: err instanceof Error ? err.message : String(err), durationMs: 0, artifacts: [], timedOut: false };
+      } finally {
+        await plan.cleanup();
       }
     }
     if (opts.artifactsDir) {

@@ -139,6 +139,65 @@ test("agentic mode injects AGENTS.md project instructions into the system prompt
   }
 });
 
+test("agentic mode falls back to non-streaming tool calls when the provider quirk says so", async () => {
+  const provider = new MockModelProvider({
+    turns: [
+      { content: "", tokens: 5, toolCalls: [toolCall("filesystem__write", { path: "quirk.txt", content: "ok" })] },
+      { content: "done via non-streaming", tokens: 5, toolCalls: [] },
+    ],
+  });
+  provider.quirks = { toolStreaming: false }; // reverse-proxy compat: no SSE tool_calls
+  const { rt, dir, cleanup } = await makeRuntime({ model: provider });
+  try {
+    const task = await rt.createTask({
+      title: "quirk fallback",
+      goal: "write quirk.txt",
+      mode: "agentic",
+      acceptance: [{ type: "file_exists", path: "quirk.txt" }],
+    });
+    await rt.startTask(task.id);
+    const done = await rt.waitForTask(task.id);
+    assert.equal(done.status, "COMPLETED", done.error);
+    assert.equal(provider.streamCount, 0, "stream() never called");
+    assert.equal(provider.turnCount, 2, "completeWithTools drove the turns");
+    assert.equal(await fsp.readFile(path.join(dir, "quirk.txt"), "utf8"), "ok");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("agentic mode repairs malformed tool-call JSON instead of failing the call", async () => {
+  const provider = new MockModelProvider({
+    onTools: (turn) =>
+      turn === 1
+        ? { content: "", tokens: 5, toolCalls: [toolCall("filesystem__write", { path: "repaired.txt", content: "x" }, "call_1")] }
+        : { content: "done", tokens: 5, toolCalls: [] },
+  });
+  // simulate a model that emits a trailing-comma + fence-wrapped argument blob
+  const orig = provider.completeWithTools.bind(provider);
+  (provider as unknown as { completeWithTools: unknown }).completeWithTools = async (messages: unknown, tools: unknown) => {
+    const res = await orig(messages as never, tools as never);
+    if (res.toolCalls.length) res.toolCalls[0].arguments = '```json\n{"path":"repaired.txt","content":"x",}\n```';
+    return res;
+  };
+  const { rt, dir, cleanup } = await makeRuntime({ model: provider });
+  try {
+    const task = await rt.createTask({
+      title: "repair test",
+      goal: "write repaired.txt",
+      mode: "agentic",
+      acceptance: [{ type: "file_exists", path: "repaired.txt" }],
+    });
+    await rt.startTask(task.id);
+    const done = await rt.waitForTask(task.id);
+    assert.equal(done.status, "COMPLETED", `task ${done.status}: ${done.error}`);
+    assert.equal(await fsp.readFile(path.join(dir, "repaired.txt"), "utf8"), "x");
+    assert.ok(done.result?.stepResults.every((r) => r.ok), "no failed steps — the argument blob was repaired");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("invalid mode is rejected at task creation", async () => {
   const { rt, cleanup } = await makeRuntime({});
   try {

@@ -56,6 +56,7 @@ Commands:
   recover [id]                  Resume tasks interrupted by a crash (all, or one)
   daemon                        Run the scheduler loop, executing queued tasks until Ctrl-C
   chat [--auto]                 Interactive session: type goals, watch the agent work (LLM required)
+  secrets list|set|get|delete   Encrypted local vault for API keys (.agentos/secrets.json, AES-256-GCM)
 
 Global options:
   --root <dir>        Workspace root (default: cwd)
@@ -206,6 +207,54 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
           autoApprove: flags.auto === true,
           maxToolCalls: flags["max-tool-calls"] ? Number(flags["max-tool-calls"]) : undefined,
         });
+      }
+      case "secrets": {
+        const { FileSecretVault, loadMasterKey } = await import("./secrets");
+        const vault = rt.secrets ?? new FileSecretVault(dataDir, await loadMasterKey(dataDir));
+        const action = sub;
+        const name = rest[0];
+        const readValue = async (): Promise<string> => {
+          if (typeof flags.value === "string") return flags.value;
+          const chunks: Buffer[] = [];
+          for await (const c of process.stdin) chunks.push(c as Buffer);
+          return Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
+        };
+        switch (action) {
+          case "list": {
+            const names = await vault.list();
+            out(names, json, () => (names.length ? names.map((n) => `  ${n}`).join("\n") : "(no secrets stored)"));
+            return 0;
+          }
+          case "set": {
+            if (!name) throw new Error("usage: agentos secrets set <NAME> [--value value]  (or pipe the value on stdin)");
+            const value = await readValue();
+            if (!value.trim()) throw new Error("empty secret value (use --value or pipe stdin)");
+            await vault.set(name, value);
+            out({ name, stored: true, file: vault.file }, json, () => `stored ${name} in ${vault.file}`);
+            return 0;
+          }
+          case "get": {
+            if (!name) throw new Error("usage: agentos secrets get <NAME> [--show]");
+            const value = await vault.get(name);
+            if (value === null) {
+              out({ name, stored: false }, json, () => `${name}: not set`);
+              return 1;
+            }
+            if (flags.show) out({ name, value }, json, () => value);
+            else out({ name, stored: true }, json, () => `${name}: set (${value.length} chars, add --show to reveal)`);
+            return 0;
+          }
+          case "delete":
+          case "rm": {
+            if (!name) throw new Error("usage: agentos secrets delete <NAME>");
+            const removed = await vault.delete(name);
+            out({ name, removed }, json, () => `${name}: ${removed ? "deleted" : "was not set"}`);
+            return removed ? 0 : 1;
+          }
+          default:
+            console.error("usage: agentos secrets list | set <NAME> | get <NAME> [--show] | delete <NAME>");
+            return 2;
+        }
       }
       case "daemon": {
         const r = await rt.recoverAll();

@@ -1,5 +1,7 @@
 import fsp from "node:fs/promises";
 import { AgentOSError } from "./types";
+import { normalizeSandboxConfig, type SandboxConfig } from "./sandbox";
+import { PROVIDER_PROFILES, type ProviderProfileId } from "./providers";
 
 /**
  * `.agentos/config.json` — harness-level extension configuration, modelled on
@@ -26,10 +28,29 @@ export interface McpServerConfig {
   timeoutMs?: number;
 }
 
+export interface LlmConfig {
+  /** Provider profile id (sets baseUrl/model/quirk defaults). */
+  provider?: ProviderProfileId;
+  model?: string;
+  baseUrl?: string;
+  /** Vault entry name holding the API key (preferred over env vars). */
+  apiKeySecret?: string;
+  /** Override: server streams tool_calls deltas over SSE (reverse proxies often don't). */
+  toolStreaming?: boolean;
+  /** Override: server supports response_format json_object. */
+  jsonMode?: boolean;
+  /** Override: default completion budget for agentic turns. */
+  maxTokens?: number;
+}
+
 export interface AgentOsConfig {
   hooks?: Partial<Record<HookEvent, HookConfig[]>>;
   /** MCP servers whose tools are registered into the tool registry at runtime start. */
   mcpServers?: Record<string, McpServerConfig>;
+  /** Provider profile + overrides for the LLM endpoint. */
+  llm?: LlmConfig;
+  /** Sandbox tier for shell commands (terminal tool + verification engine). */
+  sandbox?: SandboxConfig;
 }
 
 export const CONFIG_FILE = "config.json";
@@ -102,6 +123,32 @@ export function validateAgentOsConfig(input: unknown): AgentOsConfig {
       servers[name] = { command, args: args as string[] | undefined, env: env as Record<string, string> | undefined, cwd, timeoutMs };
     }
     out.mcpServers = servers;
+  }
+
+  if (src.sandbox !== undefined) {
+    try {
+      out.sandbox = normalizeSandboxConfig(src.sandbox as Parameters<typeof normalizeSandboxConfig>[0]);
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  if (src.llm !== undefined) {
+    if (typeof src.llm !== "object" || src.llm === null || Array.isArray(src.llm)) throw new Error("llm must be an object");
+    const { provider, model, baseUrl, apiKeySecret, toolStreaming, jsonMode, maxTokens } = src.llm as Record<string, unknown>;
+    if (provider !== undefined && !(typeof provider === "string" && provider in PROVIDER_PROFILES)) {
+      throw new Error(`llm.provider must be one of ${Object.keys(PROVIDER_PROFILES).join(", ")}`);
+    }
+    for (const [key, value] of [["model", model], ["baseUrl", baseUrl], ["apiKeySecret", apiKeySecret]] as const) {
+      if (value !== undefined && (typeof value !== "string" || !value.trim())) throw new Error(`llm.${key} must be a non-empty string`);
+    }
+    for (const [key, value] of [["toolStreaming", toolStreaming], ["jsonMode", jsonMode]] as const) {
+      if (value !== undefined && typeof value !== "boolean") throw new Error(`llm.${key} must be a boolean`);
+    }
+    if (maxTokens !== undefined && (typeof maxTokens !== "number" || !Number.isFinite(maxTokens) || maxTokens < 128 || maxTokens > 1_000_000)) {
+      throw new Error("llm.maxTokens must be a number between 128 and 1000000");
+    }
+    out.llm = { provider: provider as ProviderProfileId | undefined, model: model as string | undefined, baseUrl: baseUrl as string | undefined, apiKeySecret: apiKeySecret as string | undefined, toolStreaming: toolStreaming as boolean | undefined, jsonMode: jsonMode as boolean | undefined, maxTokens: maxTokens as number | undefined };
   }
 
   return out;

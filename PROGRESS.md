@@ -77,3 +77,24 @@ Closing the gaps the Round-5 audit surfaced:
 - Doc drift fixed: filesystem has 14 actions (apply_patch/patch existed in the baseline; docs said 12) —
   API.md, ARCHITECTURE.md, FINAL-REPORT.md corrected.
 - Audit item left open by design: real-LLM smoke still requires a key in the environment (no key available here).
+
+## Round 7 — hardening round (sandbox, secrets vault, provider profiles)
+Four features, one boundary statement: these adapt to providers and contain accidents — they never bypass payment,
+auth or rate limits.
+- **Sandbox tiers** (`sandbox.ts`): `container` (ephemeral Docker per command — workspace at /workspace, network off,
+  `--cap-drop ALL`, mem/cpu/pids caps; the command is written to a mounted run-script so stdin keeps working; cleanup
+  deletes it), `process` (POSIX ulimit vmem/pid caps; Windows degrades with a note), `none` (default). Fails closed when
+  Docker is unreachable unless `onUnavailable: "degrade"`. Wired into the terminal tool AND the verification engine;
+  `doctor` reports the active tier.
+- **Secrets vault** (`secrets.ts` + `agentos secrets`): AES-256-GCM at rest, master key in `secret.key` (0600) or
+  `AGENTOS_SECRET_KEY`; wrong/rotated key fails closed; get masks values by default; doctor shows entry names only.
+  Provider key resolution: named vault entry (`config.llm.apiKeySecret`) → provider env vars → vault default entry.
+- **Provider profiles** (`providers.ts`): `openai`, `github-models` (models.github.ai/inference + GITHUB_TOKEN),
+  `deepseek`, `glm`, `ollama` (keyless local), `custom` (reverse proxy with baseUrl + vault secret). Profiles carry
+  compatibility quirks; `toolStreaming: false` (default for deepseek/glm/ollama/custom) makes the agentic loop fall
+  back to non-streaming tool calling — the practical fix for reverse proxies that mangle SSE tool_calls.
+- **Model-quirk repairs**: malformed tool-call arguments (markdown fences, smart quotes, trailing commas, unbalanced
+  closers, garbage after the object) are repaired before failing; `finish_reason: "length"` emits `model.truncated`.
+- Tests: 126 total — container tier verified by a real Docker integration test (gated on a reachable daemon; skipped
+  on this box where the daemon is down), vault/profile/sandbox/repair covered by unit tests; CLI smoke verified the
+  vault end-to-end (set → list → masked get → doctor `key=vault` → delete).

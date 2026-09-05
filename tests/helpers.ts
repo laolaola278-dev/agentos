@@ -46,6 +46,8 @@ export class MockModelProvider implements ModelProvider {
   name = "mock:scripted";
   turnCount = 0;
   completeCount = 0;
+  streamCount = 0;
+  quirks?: { toolStreaming?: boolean; jsonMode?: boolean; maxTokens?: number };
   constructor(private opts: MockModelProviderOptions) {}
 
   async complete(messages: Message[]): Promise<ModelCompletion> {
@@ -64,6 +66,7 @@ export class MockModelProvider implements ModelProvider {
   }
 
   async *stream(messages: Message[], opts: { tools?: ToolSchema[] } = {}): AsyncGenerator<ModelStreamEvent> {
+    this.streamCount++;
     // exercise the same scripted turns as completeWithTools so the agentic
     // streaming path is covered without network access
     if (!opts.tools?.length) {

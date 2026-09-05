@@ -6,6 +6,7 @@ import type { Tool, ToolActionDef, ToolContext, ToolInput } from "../types";
 import { ToolError } from "../types";
 import { assertCommandAllowed, buildSafeEnv, resolveSafePath } from "../security";
 import { optionalArg, requireArg } from "./registry";
+import { planSandboxedCommand, type SandboxConfig } from "../sandbox";
 
 export interface CommandResult {
   command: string;
@@ -472,7 +473,7 @@ export class TerminalTool implements Tool {
     { name: "stop", description: "Terminate a background process", params: { id: "string" } },
   ];
 
-  constructor(private processes: ProcessManager, private opts: { allowDangerous?: boolean; shell?: string } = {}) {}
+  constructor(private processes: ProcessManager, private opts: { allowDangerous?: boolean; shell?: string; sandbox?: SandboxConfig; sandboxAvailable?: () => Promise<boolean> } = {}) {}
 
   async execute(input: ToolInput, ctx: ToolContext): Promise<unknown> {
     const a = input.args ?? {};
@@ -481,19 +482,27 @@ export class TerminalTool implements Tool {
         const command = requireArg<string>(a, "command");
         const cwd = a.cwd ? resolveSafePath(ctx.workdir, String(a.cwd)) : ctx.workdir;
         const extraEnv = optionalArg<Record<string, string>>(a, "env", {});
-        const result = await runCommand(command, {
-          cwd,
-          timeoutMs: Math.min(optionalArg(a, "timeoutMs", ctx.timeoutMs), ctx.timeoutMs),
-          env: buildSafeEnv(extraEnv),
-          input: optionalArg<string | undefined>(a, "input", undefined),
-          maxOutputBytes: optionalArg(a, "maxOutputBytes", 256 * 1024),
-          signal: ctx.signal,
-          allowDangerous: this.opts.allowDangerous,
-          shell: ctx.shell ?? this.opts.shell,
-        });
-        if (result.timedOut) throw new ToolError("TIMEOUT", `command timed out after ${result.durationMs}ms`, { retryable: true, details: result });
-        if (ctx.signal.aborted) throw ctx.signal.reason instanceof Error ? ctx.signal.reason : new ToolError("ABORTED", String(ctx.signal.reason));
-        return result;
+        const plan = this.opts.sandbox
+          ? await planSandboxedCommand(command, { workdir: cwd, cfg: this.opts.sandbox, available: this.opts.sandboxAvailable })
+          : { command, cleanup: async () => undefined, mode: "none" as const };
+        try {
+          const result = await runCommand(plan.command, {
+            cwd,
+            timeoutMs: Math.min(optionalArg(a, "timeoutMs", ctx.timeoutMs), ctx.timeoutMs),
+            env: buildSafeEnv(extraEnv),
+            input: optionalArg<string | undefined>(a, "input", undefined),
+            maxOutputBytes: optionalArg(a, "maxOutputBytes", 256 * 1024),
+            signal: ctx.signal,
+            allowDangerous: this.opts.allowDangerous,
+            shell: ctx.shell ?? this.opts.shell,
+          });
+          if (plan.note) (result as CommandResult & { sandboxNote?: string }).sandboxNote = plan.note;
+          if (result.timedOut) throw new ToolError("TIMEOUT", `command timed out after ${result.durationMs}ms`, { retryable: true, details: result });
+          if (ctx.signal.aborted) throw ctx.signal.reason instanceof Error ? ctx.signal.reason : new ToolError("ABORTED", String(ctx.signal.reason));
+          return result;
+        } finally {
+          await plan.cleanup();
+        }
       }
       case "start": {
         const command = requireArg<string>(a, "command");
