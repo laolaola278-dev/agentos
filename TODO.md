@@ -39,3 +39,11 @@
     [x] Task 9.5 Real-LLM smoke tier (test:smoke, skipped without LLM_SMOKE=1) + researcher report seeded into agentic conversation
     [x] Task 9.6 PostgreSQL regression suite against a live server (TEST_DATABASE_URL; dashboard boot path, checkpoint round-trip)
     [x] Task 9.7 Fixed STATE.md suite-count drift (83 total but wrong distribution)
+[x] Phase 10 Second audit remediation (REPL testability, injection lock, doc drift, EOF hang)
+    [x] Task 10.1 runChat accepts injected input/output streams; all prints routed through them
+    [x] Task 10.2 Fixed real bug found while testing: pending rl.question never settles on EOF/Ctrl-C at the
+        prompt (hangs piped stdin) → closed-signal race for main loop and permission prompts (fail-closed denial)
+    [x] Task 10.3 chat REPL integration tests via PassThrough: full session (banner//tools//tasks/goal streaming/exit),
+        toggles + unknown command + EOF exit, confirm-mode denial (y then n)
+    [x] Task 10.4 AGENTS.md → agentic system prompt injection locked by an integration test
+    [x] Task 10.5 Doc drift: filesystem is 14 actions (apply_patch/patch existed since baseline) — API.md/ARCHITECTURE/FINAL-REPORT corrected

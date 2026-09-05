@@ -110,6 +110,9 @@ export async function chatTurn(rt: AgentRuntime, text: string, handlers: ChatHan
 interface ChatOptions {
   autoApprove?: boolean;
   maxToolCalls?: number;
+  /** Injectable streams for tests; default to stdin/stdout. */
+  input?: NodeJS.ReadableStream;
+  output?: NodeJS.WritableStream;
 }
 
 /**
@@ -117,12 +120,35 @@ interface ChatOptions {
  * Permission prompts reuse the readline interface; approval is the default binding (Enter).
  */
 export async function runChat(rt: AgentRuntime, opts: ChatOptions = {}): Promise<number> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const out: NodeJS.WritableStream = opts.output ?? process.stdout;
+  const write = (text: string) => out.write(text);
+  const print = (line: string) => write(`${line}\n`);
+  const rl = readline.createInterface({ input: opts.input ?? process.stdin, output: opts.output ? (opts.output as NodeJS.WriteStream) : process.stdout, terminal: !opts.input });
+  // Node's readline/promises leaves a pending question() unsettled forever when the
+  // input stream ends (EOF) or the interface closes — race every question against an
+  // explicit closed signal so EOF / Ctrl-C always terminate the loop.
+  const inputStream = opts.input ?? process.stdin;
+  let inputClosed = false;
+  let rejectClosed: ((err: Error) => void) | null = null;
+  const closedSignal = new Promise<never>((_, reject) => {
+    rejectClosed = reject;
+  });
+  closedSignal.catch(() => undefined); // never let the signal reject unobserved (e.g. EOF mid-task)
+  const markClosed = () => {
+    if (!inputClosed) {
+      inputClosed = true;
+      rejectClosed?.(new Error("chat input closed"));
+    }
+  };
+  if ((inputStream as NodeJS.ReadableStream & { readableEnded?: boolean }).readableEnded) markClosed();
+  else inputStream.once("end", markClosed);
+  inputStream.once("close", markClosed);
+  const ask = (query: string): Promise<string> => Promise.race([rl.question(query), closedSignal]) as Promise<string>;
   // serialize permission prompts; the runtime may deny-parallel several calls
   let permissionChain: Promise<boolean> = Promise.resolve(true);
   const askPermission = async (req: PermissionRequest): Promise<boolean> => {
     const next = permissionChain.then(async () => {
-      const answer = await rl.question(`\n[confirm] allow ${req.tool}.${req.action}? (y/N) `);
+      const answer = await ask(`\n[confirm] allow ${req.tool}.${req.action}? (y/N) `).catch(() => "n"); // closed input denies (fail-closed)
       return /^y(es)?$/i.test(answer.trim());
     });
     permissionChain = next.catch(() => false);
@@ -131,24 +157,25 @@ export async function runChat(rt: AgentRuntime, opts: ChatOptions = {}): Promise
   rt.tools.setPermissionGate({ mode: opts.autoApprove ? "auto" : "confirm", request: askPermission });
 
   const baseHandlers: ChatHandlers = {
-    print: (line) => console.log(line),
-    printDelta: (text) => process.stdout.write(text),
+    print,
+    printDelta: write,
   };
 
   rt.bus.subscribe((e) => {
     if (e.type === "hook.executed" && (e.data as { blocked?: boolean } | undefined)?.blocked) {
-      console.log(`  ⛔ hook: ${e.error ?? "blocked"}`);
+      print(`  ⛔ hook: ${e.error ?? "blocked"}`);
     }
   }, { typePrefix: "hook." });
 
-  console.log(BANNER);
+  print(BANNER);
   let exitCode = 0;
   let running: string | null = null;
   rl.on("SIGINT", () => {
     if (running) {
-      console.log("\n(cancel current task…)");
+      print("\n(cancel current task…)");
       void rt.cancelTask(running).catch(() => undefined);
     } else {
+      markClosed();
       rl.close();
     }
   });
@@ -156,36 +183,36 @@ export async function runChat(rt: AgentRuntime, opts: ChatOptions = {}): Promise
     for (;;) {
       let line: string;
       try {
-        line = (await rl.question("\nagentos> ")).trim();
+        line = (await ask("\nagentos> ")).trim();
       } catch {
         break; // stdin closed / Ctrl-C at prompt
       }
       if (!line) continue;
       if (line === "/exit" || line === "/quit") break;
       if (line === "/help" || line === "/?") {
-        console.log(BANNER);
+        print(BANNER);
         continue;
       }
       if (line === "/tools") {
-        for (const t of rt.listTools()) console.log(`  ${t.name}: ${t.actions.map((a) => a.name).join(", ")}`);
+        for (const t of rt.listTools()) print(`  ${t.name}: ${t.actions.map((a) => a.name).join(", ")}`);
         continue;
       }
       if (line === "/tasks") {
-        for (const t of rt.listTasks().slice(0, 10)) console.log(`  ${t.id}  ${t.status}  ${t.spec.title}`);
+        for (const t of rt.listTasks().slice(0, 10)) print(`  ${t.id}  ${t.status}  ${t.spec.title}`);
         continue;
       }
       if (line === "/auto") {
         rt.tools.setPermissionGate(null);
-        console.log("permission mode: auto (no prompts)");
+        print("permission mode: auto (no prompts)");
         continue;
       }
       if (line === "/confirm") {
         rt.tools.setPermissionGate({ mode: "confirm", request: askPermission });
-        console.log("permission mode: confirm");
+        print("permission mode: confirm");
         continue;
       }
       if (line.startsWith("/")) {
-        console.log(`unknown command: ${line}`);
+        print(`unknown command: ${line}`);
         continue;
       }
       const handlers: ChatHandlers = {
@@ -198,7 +225,7 @@ export async function runChat(rt: AgentRuntime, opts: ChatOptions = {}): Promise
         const res = await chatTurn(rt, line, handlers, { budget: { maxToolCalls: opts.maxToolCalls } });
         if (res.status === "FAILED") exitCode = 1;
       } catch (err) {
-        console.log(`error: ${err instanceof Error ? err.message : String(err)}`);
+        print(`error: ${err instanceof Error ? err.message : String(err)}`);
         exitCode = 1;
       } finally {
         running = null;

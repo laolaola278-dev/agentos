@@ -151,6 +151,9 @@ describe("runtime lifecycle", () => {
       const cp = await rt.persistence.loadCheckpoint(t.id);
       assert.ok(cp && cp.completedSteps.filter((s) => s.ok).length === 1, "s1 must be checkpointed, s2 interrupted");
       assert.equal(cp!.phase, "EXECUTING");
+      // the killed s2 shell may still hold trace.txt briefly on Windows; a real
+      // operator resuming after a pause gives the system a moment too
+      await new Promise((r) => setTimeout(r, 300));
       await rt.resumeTask(t.id);
       const done = await rt.waitForTask(t.id);
       assert.equal(done.status, "COMPLETED", done.error);

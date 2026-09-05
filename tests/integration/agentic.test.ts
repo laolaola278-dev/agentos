@@ -106,6 +106,39 @@ test("agentic mode without a model provider fails fast with MODEL_REQUIRED", asy
   }
 });
 
+test("agentic mode injects AGENTS.md project instructions into the system prompt", async () => {
+  const captured: string[] = [];
+  const provider = new MockModelProvider({
+    onTools: (turn, messages) => {
+      captured.push(messages[0]?.content ?? "");
+      return turn === 1
+        ? { content: "", tokens: 1, toolCalls: [toolCall("filesystem__write", { path: "ok.txt", content: "ok" })] }
+        : { content: "done — ok.txt written", tokens: 1, toolCalls: [] };
+    },
+  });
+  const { rt, dir, cleanup } = await makeRuntime({ model: provider });
+  try {
+    await fsp.writeFile(path.join(dir, "AGENTS.md"), "# Project rules\n- always use pnpm here\n- keep tests deterministic");
+    const task = await rt.createTask({
+      title: "instructions",
+      goal: "write ok.txt",
+      mode: "agentic",
+      acceptance: [{ type: "file_exists", path: "ok.txt" }],
+    });
+    await rt.startTask(task.id);
+    const done = await rt.waitForTask(task.id);
+    assert.equal(done.status, "COMPLETED", done.error);
+    assert.ok(captured.length >= 1, "model saw at least one turn");
+    const systemPrompt = captured[0];
+    assert.match(systemPrompt, /always use pnpm here/, "AGENTS.md content present in the system prompt");
+    assert.match(systemPrompt, /keep tests deterministic/);
+    assert.match(systemPrompt, /Goal: write ok\.txt/);
+    assert.ok(systemPrompt.includes(dir), "workspace path present in the system prompt");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("invalid mode is rejected at task creation", async () => {
   const { rt, cleanup } = await makeRuntime({});
   try {

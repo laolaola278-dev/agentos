@@ -16,7 +16,7 @@ Code size: core `src/agentos` ≈ 4936 lines, tests ≈ 1563 lines, dashboard/AP
       every call logged, timeout-able, cancellable, structured, output-capped
 - [x] Terminal — stdout/stderr/exit code/signal, timeout with process-tree kill, huge output cap, crash handling,
       stdin EOF for interactive programs, background processes
-- [x] Filesystem — 12 actions; traversal + symlink guard, permission/missing/binary/large-file handling, atomic writes
+- [x] Filesystem — 14 actions incl. apply_patch (unified/OpenAI-style patch, atomic); traversal + symlink guard, permission/missing/binary/large-file handling, atomic writes
 - [x] Git — status/diff/log/branch/checkout/add/commit/stash/init/worktree/merge/clone; no shell; conflict rollback
 - [x] Event system — bus with persist/query/stream/replay; 30+ event types; redaction; bounded retry buffer
 - [x] Event log — JSONL mirror + SQLite (node:sqlite) + PostgreSQL (Drizzle); fields ts/task_id/agent_id/type/tool/args/result/duration/error

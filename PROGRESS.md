@@ -62,3 +62,18 @@ research wiring was indirect. All closed:
 - Fixed STATE.md suite-count drift; docs updated (README, ARCHITECTURE, DEVELOPMENT, TODO, FINAL-REPORT addendum).
 - Tests: 101/101 with `TEST_DATABASE_URL` set (unit 61, integration 25, e2e 2, recovery 4, chaos 5, stress 4);
   lint/typecheck/build clean. Remaining known gaps are documented limitations (OS sandbox, real-token metering).
+
+## Round 6 — second audit remediation (REPL coverage, injection lock, doc drift, EOF hang bug)
+Closing the gaps the Round-5 audit surfaced:
+- `runChat` is now testable: injectable `input`/`output` streams; every print routes through them.
+- **Real bug found by the new tests**: a pending `rl.question()` never settles when the input stream ends or the
+  interface closes on Node 24 (verified with a minimal probe) — piped-stdin `agentos chat` and Ctrl-C at the prompt
+  hung forever. Fixed with a closed-signal race around every question (main loop and permission prompts; a closed
+  prompt denies fail-closed). Verified: `printf "" | agentos chat` exits 0, no-key goal errors then exits 1.
+- chat REPL integration tests (PassThrough-driven): full session (banner, /tools, streamed goal turn, /tasks, /exit),
+  permission toggles + unknown command + graceful EOF exit, and the confirm-mode denial flow (allow researcher's
+  filesystem.list, deny filesystem.write → `✗ PERMISSION_DENIED` rendered, no file written).
+- AGENTS.md → agentic system-prompt injection locked by an integration test (content + goal + workspace path asserted).
+- Doc drift fixed: filesystem has 14 actions (apply_patch/patch existed in the baseline; docs said 12) —
+  API.md, ARCHITECTURE.md, FINAL-REPORT.md corrected.
+- Audit item left open by design: real-LLM smoke still requires a key in the environment (no key available here).

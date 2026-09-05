@@ -43,7 +43,9 @@ Implement `Agent<I, O>` in `agents.ts`, run it via `runAgent()` (emits `agent.*`
   messages; `AGENTS.md`/`CLAUDE.md`/`AGENTOS.md` from the workdir are injected as project instructions.
 - **Permissions**: `permissionMode: "confirm"` + `onPermissionRequest` on the runtime; the gate sits in
   `ToolRegistry.execute` before hooks; `PERMISSION_DENIED` is a fatal code.
-- **Chat**: `chat.ts` — `chatTurn(rt, text, handlers, opts)` is the testable unit; `runChat` only owns the readline loop.
+- **Chat**: `chat.ts` — `chatTurn(rt, text, handlers, opts)` is the testable unit; `runChat` owns the readline loop and
+  accepts injected `input`/`output` streams for tests (see tests/integration/chat-repl.test.ts). Note: pending
+  `rl.question()` never settles on EOF on current Node — always race questions against the closed signal.
 - **Mocked LLM**: `MockModelProvider` (tests/helpers.ts) scripts both `completeWithTools` and streaming `stream` turns;
   use it for model-driven tests so the suite stays offline and deterministic.
 - **Optional tiers**: `test:smoke` needs `LLM_SMOKE=1` + `LLM_API_KEY`; the PG suite needs `TEST_DATABASE_URL`

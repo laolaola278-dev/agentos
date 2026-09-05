@@ -27,7 +27,7 @@
 | `persistence-pg.ts` | `PgPersistence` via Drizzle (`src/db/schema.ts`) |
 | `events.ts` | `EventBus`: redact → sequence → persist → fan-out; bounded retry buffer when the store fails; `stream()` async iterator; `replay()` |
 | `tools/registry.ts` | `ToolRegistry.execute`: timeout + cancellation (AbortSignal), output truncation, structured `ToolOutput`, `tool.*` events. Never throws |
-| `tools/filesystem.ts` | read/write/append/edit/delete/move/copy/list/search/mkdir/stat/exists inside the workdir; binary detection, size caps, atomic writes |
+| `tools/filesystem.ts` | read/write/append/edit/apply_patch/patch/delete/move/copy/list/search/mkdir/stat/exists inside the workdir (14 actions); binary detection, size caps, atomic writes |
 | `tools/terminal.ts` | `runCommand` (bash, own process group, SIGTERM→SIGKILL, output caps, stdin EOF), `ProcessManager` (background processes), `TerminalTool`, `ProcessTool` |
 | `tools/git.ts` | status/diff/log/branch/checkout/add/commit/stash/init/worktree/merge(abort on conflict)/clone — argument arrays, no shell |
 | `tools/http.ts` | fetch with timeout, body cap, scheme/metadata-host/allowlist policy, header redaction |

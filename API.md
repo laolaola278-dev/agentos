@@ -54,7 +54,7 @@ Runtime options accept `config` (`hooks` + `mcpServers`, also auto-loaded from `
 
 ## Tools
 
-`filesystem`: read, write, append, edit, delete, move, copy, list, search, mkdir, stat, exists ·
+`filesystem`: read, write, append, edit, apply_patch, patch, delete, move, copy, list, search, mkdir, stat, exists ·
 `terminal`: execute, start, poll, stop · `process`: list, kill, wait, output ·
 `git`: status, diff, log, branch, checkout, add, commit, stash, init, rev_parse, state, worktree_add, worktree_remove, merge, branch_delete, clone ·
 `http`: get, post, request. Run `agentos tools list` for parameters.
