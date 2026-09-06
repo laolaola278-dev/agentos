@@ -11,6 +11,7 @@
     "test:unit": "node scripts/test.mjs tests/unit/*.test.ts",
     "test:integration": "node scripts/test.mjs tests/integration/*.test.ts",
     "test:e2e": "node scripts/test.mjs tests/e2e/*.test.ts",
+    "test:sunflowers": "node scripts/sunflowers-smoke.mjs",
     "test:recovery": "node scripts/test.mjs tests/recovery/*.test.ts",
     "test:stress": "node scripts/test.mjs tests/stress/*.test.ts",
     "test:chaos": "node scripts/test.mjs tests/chaos/*.test.ts",
@@ -27,14 +28,17 @@
     "pg": "8.20.0",
     "react": "19.2.6",
     "react-dom": "19.2.6",
-    "server-only": "^0.0.1"
+    "server-only": "^0.0.1",
+    "three": "^0.185.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "4.1.17",
     "@types/node": "22.19.15",
     "@types/pg": "8.18.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "@types/three": "^0.185.4",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
