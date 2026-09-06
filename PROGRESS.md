@@ -162,3 +162,16 @@ All four leftovers from the CLI-gap report closed, each with tests:
 - **MCP advanced sessions**: an expired session (spec: 404) triggers a transparent re-initialize + one request replay;
   `close()` sends the spec DELETE termination; `runtime.close()` now awaits MCP client shutdown (caught a fire-and-
   forget close that truncated the DELETE).
+
+## Round 11 — web UI completion (chat page + tool-approval gate)
+- **Web approval gate**: the server runtime's permission gate now bridges to the web — confirm-mode tool
+  calls park in an in-process queue (`/api/agentos/approvals` GET/POST), the dashboard renders an
+  approve/deny toast (ApprovalToaster), timeout denies fail-closed (5 min), every decision is audited via
+  `approval.requested|granted|denied` events. Integration test covers approve/deny/timeout paths.
+- **Chat page** (`/chat`): DeepSeek-harness-style conversational frontend — each message starts an agentic
+  task (transcript-seeded from the persisted session), SSE renders model deltas + tool activity live,
+  assistant bubbles link to task detail; prior turns replay from chat-session.json; accurate no-LLM banner.
+- **Chat API**: `/api/agentos/chat` GET (session) / POST (start turn) / PUT (persist); SSE stream persists
+  finished agentic turns into the chat session automatically.
+- Verified live: dashboard Chat entry, /chat page load, noModel 503 banner, approvals API (empty list /
+  404 bogus id); build green; full-suite results in STATE.md.

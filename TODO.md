@@ -95,3 +95,9 @@
         agentic conversation; chat-session entries store the model's closing message; turns replay as real messages
     [x] Task 14.4 MCP advanced session handling: 404 session-expiry → transparent re-initialize + request replay;
         close() sends the spec DELETE termination; runtime.close() awaits MCP client shutdown
+[x] Phase 16 Web-UI completion
+    [x] Task 16.1 Web approval bridge (server.ts): confirm-gate parks in queue; timeouts deny; audited events
+    [x] Task 16.2 /api/agentos/approvals (list + decide); ApprovalToaster in the dashboard (approve/deny, fail-closed copy)
+    [x] Task 16.3 /chat conversational page (SSE live deltas/tools, transcript resume, task links) + /api/agentos/chat
+    [x] Task 16.4 SSE stream persists finished agentic turns into the chat session
+    [x] Task 16.5 Integration test for the bridge (approve/deny/timeout); live verification of pages + APIs

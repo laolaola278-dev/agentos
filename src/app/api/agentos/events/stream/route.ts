@@ -10,6 +10,7 @@ export async function GET(req: Request) {
   const taskId = p.get("taskId") ?? undefined;
   const typePrefix = p.get("typePrefix") ?? undefined;
   let lastId = p.get("afterId") ? Number(p.get("afterId")) : 0;
+  const persisted = new Set<string>();
   const encoder = new TextEncoder();
   let timer: NodeJS.Timeout | null = null;
   let closed = false;
@@ -34,7 +35,24 @@ export async function GET(req: Request) {
           }
           if (taskId) {
             const t = rt.getTask(taskId) ?? (await rt.persistence.getTask(taskId));
-            if (t) send("task", { ...t, result: undefined });
+            if (t) {
+              send("task", { ...t, result: undefined });
+              // chat sessions: persist the turn once, exactly when the task lands terminal
+              if (["COMPLETED", "FAILED", "CANCELLED"].includes(t.status)) {
+                const chatKey = `chat-persisted:${taskId}`;
+                if (!persisted.has(chatKey) && (t.spec.mode ?? "plan") === "agentic" && (t.spec.goal ?? "").length < 4096) {
+                  persisted.add(chatKey);
+                  const { saveChatSession } = await import("@/agentos/chat");
+                  await saveChatSession(rt.dataDir, {
+                    ts: new Date().toISOString(),
+                    goal: t.spec.goal,
+                    status: t.status,
+                    summary: t.result?.finalMessage ?? t.result?.summary ?? "",
+                    assistant: t.result?.finalMessage ?? "",
+                  }).catch(() => undefined);
+                }
+              }
+            }
           }
         } catch (err) {
           send("error", { message: err instanceof Error ? err.message : String(err) });

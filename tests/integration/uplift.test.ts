@@ -111,3 +111,67 @@ test("built-in core eval preset runs fully green and deterministically", async (
     await cleanup();
   }
 });
+
+test("web approval bridge: confirm-mode tool call parks, resolves on decision, fails closed on timeout", async () => {
+  const { AgentRuntime } = await import("@/agentos/runtime");
+  const { rmRetry } = await import("../helpers");
+  const os = await import("node:os");
+  const pathMod = await import("node:path");
+  const fsp = await import("node:fs/promises");
+  const dir = await fsp.mkdtemp(pathMod.join(os.tmpdir(), "agentos-bridge-"));
+  const rt = await AgentRuntime.create({ rootDir: dir, dataDir: pathMod.join(dir, ".agentos"), persistence: "memory", model: null, controlPollMs: 0 });
+  const pending = new Map<string, { resolve: (ok: boolean) => void }>();
+  const installGate = (timeoutMs: number) => {
+    rt.tools.setPermissionGate({
+      mode: "confirm",
+      request: async () =>
+        new Promise<boolean>((resolveP) => {
+          const id = `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          const timer = setTimeout(() => {
+            pending.delete(id);
+            resolveP(false);
+          }, timeoutMs);
+          pending.set(id, { resolve: (ok) => { clearTimeout(timer); pending.delete(id); resolveP(ok); } });
+        }),
+    });
+  };
+  try {
+    const waitForPark = () =>
+      new Promise<string>((res, rej) => {
+        const started = Date.now();
+        const tick = () => {
+          const first = [...pending.keys()][0];
+          if (first) return res(first);
+          if (Date.now() - started > 4000) return rej(new Error("gate request never parked"));
+          setTimeout(tick, 25);
+        };
+        tick();
+      });
+
+    // approve path
+    installGate(5000);
+    const t1 = await rt.createTask({ title: "approve-me", goal: "n/a", steps: [{ id: "s1", tool: "terminal", action: "execute", args: { command: "echo approved" } }] });
+    const run1 = rt.runTask(t1.id).then((d) => d.status);
+    const id1 = await waitForPark();
+    pending.get(id1)!.resolve(true); // dashboard "approve"
+    assert.equal(await run1, "COMPLETED", "approved call runs to completion");
+
+    // deny path: fail-closed
+    installGate(5000);
+    const t2 = await rt.createTask({ title: "deny-me", goal: "n/a", steps: [{ id: "s1", tool: "terminal", action: "execute", args: { command: "echo x" } }] });
+    const run2 = rt.runTask(t2.id).then((d) => d.status);
+    const id2 = await waitForPark();
+    pending.get(id2)!.resolve(false); // dashboard "deny"
+    assert.equal(await run2, "FAILED");
+    assert.match(rt.getTask(t2.id)!.error ?? "", /PERMISSION_DENIED/);
+
+    // timeout path: fail-closed without any decision
+    installGate(300);
+    const t3 = await rt.createTask({ title: "timeout-me", goal: "n/a", steps: [{ id: "s1", tool: "terminal", action: "execute", args: { command: "echo x" } }] });
+    const run3 = rt.runTask(t3.id).then((d) => d.status);
+    assert.equal(await run3, "FAILED", "timeout denies (fail-closed)");
+  } finally {
+    await rt.close();
+    await rmRetry(dir);
+  }
+});

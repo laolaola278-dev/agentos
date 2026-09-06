@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import ApprovalToaster from "./approval-toaster";
 import type { Task, TaskStatus } from "@/agentos/types";
 import type { MetricsSnapshot } from "@/agentos/metrics";
 
@@ -135,6 +136,7 @@ export default function Dashboard() {
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 px-6 py-8">
+      <ApprovalToaster />
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold text-slate-900">AgentOS</h1>
@@ -163,6 +165,9 @@ export default function Dashboard() {
           <a className="rounded-lg bg-white px-3 py-1.5 ring-1 ring-slate-200 hover:bg-slate-50" href="/api/agentos/tools" target="_blank">
             Tools
           </a>
+          <Link className="rounded-lg bg-slate-900 px-3 py-1.5 font-semibold text-white hover:bg-slate-700" href="/chat">
+            Chat
+          </Link>
         </nav>
       </header>
 
