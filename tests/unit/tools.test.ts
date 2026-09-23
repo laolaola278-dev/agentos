@@ -2,7 +2,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { createDefaultToolRegistry, ToolRegistry, runCommand, ProcessManager } from "@/agentos/tools";
+import { createDefaultToolRegistry, ToolRegistry, runCommand, ProcessManager, globToRegExp } from "@/agentos/tools";
 import { HttpTool } from "@/agentos/tools/http";
 import { runGit } from "@/agentos/tools/git";
 import { VerificationEngine } from "@/agentos/verification";
@@ -65,6 +65,22 @@ describe("filesystem tool", () => {
     assert.equal((await exec("filesystem", "delete", { path: "src", recursive: true })).ok, true);
     assert.equal((await exec("filesystem", "delete", { path: "." })).error?.code, "REFUSED");
     await fsp.access(path.join(dir, "c.txt"));
+  });
+  test("search globs: ** recurses, brace groups do not, CRLF lines drop the carriage return", async () => {
+    const { exec, dir } = await setup();
+    assert.equal(String(globToRegExp("**/*.txt")), "/^(?:.*\\/)?[^/]*\\.txt$/");
+    assert.equal(globToRegExp("**/*.ts").test("src/a.ts"), true);
+    assert.equal(globToRegExp("**/*.ts").test("a.ts"), true);
+    assert.equal(globToRegExp("src/**").test("src/nested/a.ts"), true);
+    await fsp.mkdir(path.join(dir, "src", "nested"), { recursive: true });
+    await fsp.writeFile(path.join(dir, "src", "nested", "a.txt"), "needle\r\n");
+    await fsp.writeFile(path.join(dir, "src", "b.ts"), "export const needle = 1;\n");
+    const nested = await exec("filesystem", "search", { pattern: "^needle$", glob: "**/*.txt" });
+    const files = (nested.data as { matches: { file: string; text: string }[] }).matches;
+    assert.deepEqual(files.map((m) => m.file), ["src/nested/a.txt"]);
+    assert.equal(files[0].text, "needle");
+    const ts = await exec("filesystem", "search", { pattern: "needle", glob: "**/*.ts" });
+    assert.equal((ts.data as { matches: { file: string }[] }).matches[0].file, "src/b.ts");
   });
   test("errors: traversal, missing, permission, binary, large files, missing args", async () => {
     const { exec, dir } = await setup();

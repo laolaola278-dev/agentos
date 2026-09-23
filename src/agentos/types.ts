@@ -210,6 +210,12 @@ export interface ToolActionDef {
   name: string;
   description: string;
   params: Record<string, string>;
+  /**
+   * Safe to run beside other calls in the same model turn.
+   * Claude Code only parallelises read-only tools; writes, shells and
+   * anything that mutates shared state stay serial. Defaults to false.
+   */
+  readOnly?: boolean;
 }
 
 export interface Tool {

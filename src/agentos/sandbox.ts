@@ -7,8 +7,9 @@ import { AgentOSError } from "./types";
  * Pluggable sandbox tiers for shell commands (terminal tool + verification engine):
  *
  * - `none`      — current behaviour: workspace path guard + deny-list policy.
- * - `process`   — POSIX: ulimit vmem/pid caps layered onto the same shell; on
- *                 Windows process limits are unavailable, so this degrades to `none`.
+ * - `process`   — POSIX: ulimit vmem/pid caps layered onto the same shell. On
+ *                 Windows this fails closed (Job Objects need native bindings)
+ *                 unless `onUnavailable: "degrade"` is set explicitly.
  * - `container` — runs every command inside an ephemeral Docker container with the
  *                 workspace mounted at /workspace, no network, dropped capabilities,
  *                 memory/cpu/pids caps. Requires a reachable Docker daemon.
@@ -109,8 +110,12 @@ export async function planSandboxedCommand(command: string, opts: { workdir: str
 
   if (cfg.mode === "process") {
     if (platform === "win32") {
-      // Windows Job Objects need native bindings — degrade honestly (SECURITY.md)
-      return { ...noop, note: "process limits are unsupported on win32; ran unsandboxed" };
+      // Job Objects need native bindings. Fail closed unless the user opted into
+      // unsandboxed execution — a silent degrade looked like a sandbox was on.
+      if (cfg.onUnavailable === "degrade") {
+        return { ...noop, note: "process limits are unsupported on win32; ran unsandboxed (sandbox.onUnavailable=degrade)" };
+      }
+      throw new AgentOSError("SANDBOX_UNAVAILABLE", "sandbox mode=process is unsupported on win32 (Job Objects need native bindings); use mode=container or set sandbox.onUnavailable=degrade");
     }
     const caps = [
       `ulimit -t ${cfg.cpuSeconds ?? DEFAULT_SANDBOX.cpuSeconds} 2>/dev/null`,

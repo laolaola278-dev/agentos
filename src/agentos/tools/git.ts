@@ -88,17 +88,17 @@ export class GitTool implements Tool {
   name = "git";
   description = "Safe git operations in the task workdir (no shell, no force-push, no history rewriting)";
   actions: ToolActionDef[] = [
-    { name: "status", description: "Working tree status", params: {} },
-    { name: "diff", description: "Diff (optionally staged / against ref / path)", params: { staged: "boolean?", ref: "string?", path: "string?", stat: "boolean?" } },
-    { name: "log", description: "Recent commits", params: { limit: "number?", path: "string?" } },
+    { name: "status", description: "Working tree status", params: {}, readOnly: true },
+    { name: "diff", description: "Diff (optionally staged / against ref / path)", params: { staged: "boolean?", ref: "string?", path: "string?", stat: "boolean?" }, readOnly: true },
+    { name: "log", description: "Recent commits", params: { limit: "number?", path: "string?" }, readOnly: true },
     { name: "branch", description: "List or create branch", params: { name: "string?", from: "string?" } },
     { name: "checkout", description: "Checkout branch/ref", params: { ref: "string", create: "boolean?" } },
     { name: "add", description: "Stage paths", params: { paths: "string[]" } },
     { name: "commit", description: "Commit staged changes", params: { message: "string", allowEmpty: "boolean?" } },
     { name: "stash", description: "Stash operations", params: { op: "push|pop|list|drop", message: "string?" } },
     { name: "init", description: "Initialise repository", params: {} },
-    { name: "rev_parse", description: "Resolve a ref", params: { ref: "string?" } },
-    { name: "state", description: "Summary: repo, branch, head, dirty", params: {} },
+    { name: "rev_parse", description: "Resolve a ref", params: { ref: "string?" }, readOnly: true },
+    { name: "state", description: "Summary: repo, branch, head, dirty", params: {}, readOnly: true },
     { name: "worktree_add", description: "Create an isolated worktree on a new branch", params: { path: "string", branch: "string", from: "string?" } },
     { name: "worktree_remove", description: "Remove a worktree", params: { path: "string", force: "boolean?" } },
     { name: "merge", description: "Merge a branch (no-ff); aborts on conflict", params: { branch: "string", message: "string?" } },

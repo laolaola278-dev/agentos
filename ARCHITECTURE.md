@@ -42,11 +42,11 @@
 | `hooks.ts` | `HookRunner`: runs `pre_tool_call` / `post_tool_call` / `task_completed` / `task_failed` hooks (Claude Code semantics: exit 2 blocks); payload via stdin, redacted |
 | `mcp.ts` | Minimal MCP stdio client (JSON-RPC over newline-delimited stdio): initialize → tools/list → tools/call; registers each MCP tool as a registry tool `mcp_<server>_<tool>` |
 | `chat.ts` | Interactive REPL (`agentos chat`): goals → agentic tasks with live streamed output, permission prompts, Ctrl-C cancels the running task; `chatTurn()` is the testable core |
-| `sandbox.ts` | Pluggable sandbox tiers for shell commands: `none` / `process` (POSIX ulimit caps) / `container` (ephemeral Docker: workspace at `/workspace`, no network, dropped caps, mem/cpu/pids limits); script-file mounting keeps stdin usable; fails closed or degrades per config |
+| `sandbox.ts` | Pluggable sandbox tiers for shell commands: `none` / `process` (POSIX ulimit caps; Windows fails closed unless `onUnavailable=degrade`) / `container` (ephemeral Docker: workspace at `/workspace`, no network, dropped caps, mem/cpu/pids limits); script-file mounting keeps stdin usable; fails closed or degrades per config |
 | `secrets.ts` | Encrypted local vault (`.agentos/secrets.json`, AES-256-GCM; master key in `.agentos/secret.key` 0600 or `AGENTOS_SECRET_KEY`); CLI `agentos secrets`; names only in diagnostics |
 | `providers.ts` | Provider profiles (openai / github-models / deepseek / glm / ollama / custom reverse proxy): baseUrl, model, key env names, compatibility quirks (tool-call streaming, JSON mode, maxTokens, maxTokensField); key resolution config.llm.apiKeySecret → env → vault; a 400 naming the completion-limit field auto-flips max_tokens ↔ max_completion_tokens |
 | `context.ts` | Context engineering (E1): `cleanToolResult` (head+tail strings, sliced arrays, stripped keys) shapes what the MODEL sees; `NotesStore` external memory per task survives compaction; `contextBudgetReport` |
-| `repomap.ts` | Workspace repo-map (Aider-style, heuristic v1): per-language symbol extraction (TS/JS/Python/Go/Rust), dependency-dir skipping, symbol-density ranking, char budget; injected into agentic system prompts and researcher reports |
+| `repomap.ts` | Workspace repo-map (Aider-style, heuristic v1): per-language symbol extraction (TS/JS, Python, Go, Rust, Java/Kotlin, C/C++, Ruby), dependency-dir skipping, files without declarations kept, extra extensions via `extensions`, symbol-density ranking, char budget; injected into agentic system prompts and researcher reports |
 | `skills.ts` | Skill library (E5): `.agentos/skills/*.md` loaded with frontmatter; injection-pattern scan REJECTS hostile skills (RCE pipes, instruction overrides, persona hijacks, secret-shaped tokens) with reasons; capped prompt section |
 | `auth.ts` | Scoped API keys: SHA-256 hashed storage (plaintext shown once), scopes tasks:read/write/admin, per-key token bucket, `loadApiKeyStore` gates enforcement on the first created key |
 | `evals.ts` | Eval loop (E3): suites of tasks with objective verifiers, deterministic scorer (status + acceptance + counters), persisted reports, mechanical variant comparison (regressions named); built-in `core` preset suite |
@@ -75,12 +75,15 @@ Budget violations are terminal (never retried).
 - **plan** (default): the planner produces a static step plan (spec → goal DSL → model) and the executor runs it
   deterministically with retries.
 - **agentic** (`spec.mode: "agentic"`, requires an LLM with native tool calling): the model drives the tool registry in a
-  loop — it proposes one or more tool calls per turn, each call is executed through the same registry (budgets, hooks,
+  loop — it proposes one or more tool calls per turn. A turn is split into waves: consecutive
+  read-only calls (`ToolActionDef.readOnly`, Claude Code `isConcurrencySafe`) run together up to
+  `agentic.maxParallel` (default 4); every mutating call is its own wave and never overlaps another
+  call. Each call still goes through the same registry (budgets, hooks,
   permission gate, checkpoints) and the structured result is fed back, until the model answers without tool calls. The
   conversation is trimmed to whole tool-call turns so provider pairing rules stay intact; `PLANNING` emits an empty marker
   plan and the transcript lands in `completedSteps`, so verification, reviewer, debugger and recovery behave exactly as in
   plan mode. Model text streams out as transient `model.delta` events; `AGENTS.md` instructions are injected; conversations
-  past 100 messages are compacted (LLM summary of dropped turns).
+  past 100 messages, or past an estimated token budget (~4 chars/token, default 24k), are compacted (LLM summary of dropped turns).
 
 ### Permissions
 

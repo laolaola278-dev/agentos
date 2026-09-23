@@ -48,16 +48,20 @@ const LANG_PATTERNS: { exts: RegExp; patterns: RegExp[] }[] = [
   { exts: /\.py$/i, patterns: [/^\s*(?:async\s+)?def\s+([A-Za-z0-9_]+)/gm, /^\s*class\s+([A-Za-z0-9_]+)/gm] },
   { exts: /\.go$/i, patterns: [/^func\s+(?:\([^)]*\)\s*)?([A-Za-z0-9_]+)/gm, /^type\s+([A-Za-z0-9_]+)/gm] },
   { exts: /\.rs$/i, patterns: [/^\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)/gm, /^\s*(?:pub\s+)?(?:struct|enum|trait)\s+([A-Za-z0-9_]+)/gm] },
+  { exts: /\.(java|kt|kts)$/i, patterns: [/^\s*(?:public\s+|private\s+|protected\s+|abstract\s+|final\s+|open\s+|data\s+)*(?:class|interface|object|enum|fun)\s+([A-Za-z0-9_]+)/gm] },
+  { exts: /\.(c|cc|cpp|cxx|h|hh|hpp)$/i, patterns: [/^\s*(?:[\w:]+\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*\{/gm, /^\s*(?:class|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/gm] },
+  { exts: /\.rb$/i, patterns: [/^\s*(?:def|class|module)\s+([A-Za-z0-9_!?]+)/gm] },
 ];
 
-const DEFAULT_EXTS = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|go|rs)$/i;
+const DEFAULT_EXT_LIST = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "py", "go", "rs", "java", "kt", "kts", "c", "cc", "cpp", "cxx", "h", "hh", "hpp", "rb"];
+const DEFAULT_EXTS = new RegExp(`\\.(${DEFAULT_EXT_LIST.join("|")})$`, "i");
 
 interface FileEntry {
   rel: string;
   symbols: string[];
 }
 
-async function walk(dir: string, root: string, depth: number, maxDepth: number, maxFiles: number, out: FileEntry[]): Promise<void> {
+async function walk(dir: string, root: string, depth: number, maxDepth: number, maxFiles: number, accept: RegExp, out: FileEntry[]): Promise<void> {
   if (depth > maxDepth || out.length >= maxFiles) return;
   let entries: import("node:fs").Dirent[];
   try {
@@ -70,10 +74,10 @@ async function walk(dir: string, root: string, depth: number, maxDepth: number, 
     const full = path.join(dir, e.name);
     if (e.isDirectory()) {
       if (SKIP_DIRS.has(e.name) || e.name.startsWith(".")) continue;
-      await walk(full, root, depth + 1, maxDepth, maxFiles, out);
+      await walk(full, root, depth + 1, maxDepth, maxFiles, accept, out);
       continue;
     }
-    if (!e.isFile() || !DEFAULT_EXTS.test(e.name)) continue;
+    if (!e.isFile() || !accept.test(e.name)) continue;
     let stat;
     try {
       stat = await fsp.stat(full);
@@ -88,9 +92,11 @@ async function walk(dir: string, root: string, depth: number, maxDepth: number, 
       continue;
     }
     const lang = LANG_PATTERNS.find((l) => l.exts.test(e.name));
-    if (!lang) continue;
+    // Extra extensions have no grammar of their own; try the JS/TS patterns,
+    // and keep the file on the map either way so it is not invisible.
+    const patterns = lang?.patterns ?? LANG_PATTERNS[0].patterns;
     const symbols: string[] = [];
-    for (const re of lang.patterns) {
+    for (const re of patterns) {
       re.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = re.exec(content)) && symbols.length < 12) {
@@ -99,6 +105,9 @@ async function walk(dir: string, root: string, depth: number, maxDepth: number, 
     }
     if (symbols.length) {
       out.push({ rel: path.relative(root, full).split(path.sep).join("/"), symbols });
+    } else if (content.trim()) {
+      // a source file with no recognised declaration still belongs on the map
+      out.push({ rel: path.relative(root, full).split(path.sep).join("/"), symbols: ["(no declarations)"] });
     }
   }
 }
@@ -106,8 +115,10 @@ async function walk(dir: string, root: string, depth: number, maxDepth: number, 
 export async function buildRepoMap(workdir: string, opts: RepoMapOptions = {}): Promise<RepoMapResult> {
   const maxChars = opts.maxChars ?? 4000;
   const maxFiles = opts.maxFiles ?? 400;
+  const extra = (opts.extensions ?? []).map((ext) => ext.replace(/^\./, "").toLowerCase()).filter((ext) => /^[a-z0-9]+$/.test(ext));
+  const accept = extra.length ? new RegExp(`\\.(${[...DEFAULT_EXT_LIST, ...extra].join("|")})$`, "i") : DEFAULT_EXTS;
   const files: FileEntry[] = [];
-  await walk(workdir, workdir, 0, opts.maxDepth ?? 8, maxFiles, files);
+  await walk(workdir, workdir, 0, opts.maxDepth ?? 8, maxFiles, accept, files);
   // rank: symbol-dense files first, then shallower paths
   files.sort((a, b) => b.symbols.length - a.symbols.length || a.rel.split("/").length - b.rel.split("/").length || a.rel.localeCompare(b.rel));
   const lines: string[] = [];

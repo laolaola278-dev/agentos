@@ -12,7 +12,7 @@ import { OpenAICompatibleProvider } from "./model";
  * it deliberately does not (and will not) bypass payment, auth or rate limits.
  */
 
-export type ProviderProfileId = "openai" | "github-models" | "deepseek" | "glm" | "ollama" | "custom";
+export type ProviderProfileId = "openai" | "github-models" | "deepseek" | "glm" | "ollama" | "xplabs" | "custom";
 
 export interface ProviderProfile {
   id: ProviderProfileId;
@@ -62,6 +62,12 @@ export const PROVIDER_PROFILES: Record<ProviderProfileId, ProviderProfile> = {
     id: "ollama", label: "Ollama (local)", baseUrl: "http://127.0.0.1:11434/v1", defaultModel: "qwen2.5-coder:7b",
     apiKeyEnv: [], defaultSecretName: "OLLAMA_API_KEY",
     jsonMode: false, toolStreaming: false, maxTokens: 8192,
+  maxTokensField: "max_tokens",
+  },
+  xplabs: {
+    id: "xplabs", label: "Experiential Labs", baseUrl: "https://api.experientiallabs.ai/v1", defaultModel: "glm-5.3-flash",
+    apiKeyEnv: ["XPLABS_API_KEY", "LLM_API_KEY"], defaultSecretName: "XPLABS_API_KEY",
+    jsonMode: true, toolStreaming: false, maxTokens: 8192,
   maxTokensField: "max_tokens",
   },
   custom: {

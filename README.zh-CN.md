@@ -60,7 +60,8 @@ export AGENTOS_SANDBOX=container       # 或 "process" / "none"（默认）
 - `container` —— 每条命令运行在临时 Docker 容器中：工作区挂载到 `/workspace`、**无网络**、
   移除 capabilities、内存/CPU/pids 限制。需要可用的 Docker daemon（`sandbox.onUnavailable: "degrade"`
   在沙箱不可用时降级为无沙箱而不是失败）。
-- `process` —— POSIX `ulimit` vmem/pid 限制叠加到命令上（Windows 上会降级）。
+- `process` —— POSIX `ulimit` 内存/进程/CPU 秒限制。Windows 上**失败关闭**（`SANDBOX_UNAVAILABLE`），
+  只有显式设置 `sandbox.onUnavailable: "degrade"` 才会退回无沙箱。
 - `none` —— 仅策略（deny-list + 工作区路径守卫），历史默认值。
 
 沙箱是对命令策略的补充；它防范的是意外而非对手（见 SECURITY.md）。
@@ -128,9 +129,8 @@ agentos eval compare .agentos/evals/baseline-*.json .agentos/evals/variant-a-*.j
 
 ## Agentic 能力（对齐 Claude Code 的能力集）
 
-- **并行工具调用**：一轮中的独立工具调用以有界并发执行（默认 4）；
-  `agentic.parallelToolCalls: false`（或 `agentic.maxParallel`）可调。结果会重排回模型顺序，保持
-  provider 配对规则完好。
+- **并行工具调用**：一轮里连续的只读调用按 `agentic.maxParallel`（默认 4）并行；写入、shell 和其他会改状态的
+  调用各自单独执行，同一轮不会让两次编辑叠在一起。`agentic.parallelToolCalls: false` 则全部串行。结果保持模型顺序。
 - **子 agent**：`subagent` 工具把自包含的工作委托给隔离的子运行时（全新上下文、无父转录、不递归
   派生）并返回截断的 {status, summary} —— "上下文防火墙"模式。可选每子 agent `instructions`。
   在运行时选项中设 `subagent: false` 禁用。

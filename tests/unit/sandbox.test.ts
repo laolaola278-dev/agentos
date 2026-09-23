@@ -23,17 +23,19 @@ test("planSandboxedCommand none: passthrough, no cleanup needed", async () => {
   await plan.cleanup();
 });
 
-test("planSandboxedCommand process: ulimit caps on POSIX, degrade note on win32", async () => {
-  const plan = await planSandboxedCommand("echo hi", { workdir: ".", cfg: { mode: "process", memoryMb: 256, pidsLimit: 64 } });
-  if (process.platform === "win32") {
-    assert.equal(plan.mode, "none");
-    assert.match(plan.note ?? "", /win32/);
-  } else {
-    assert.equal(plan.mode, "process");
-    assert.match(plan.command, /^ulimit -v 262144/);
-    assert.match(plan.command, /ulimit -u 64/);
-    assert.ok(plan.command.endsWith("echo hi"));
-  }
+test("planSandboxedCommand process: ulimit caps on POSIX, fail closed on win32", async () => {
+  const plan = await planSandboxedCommand("echo hi", { workdir: ".", cfg: { mode: "process", memoryMb: 256, pidsLimit: 64 }, platform: "linux" });
+  assert.equal(plan.mode, "process");
+  assert.match(plan.command, /ulimit -v 262144/);
+  assert.match(plan.command, /ulimit -u 64/);
+  assert.ok(plan.command.endsWith("echo hi"));
+  await assert.rejects(
+    planSandboxedCommand("echo hi", { workdir: ".", cfg: { mode: "process" }, platform: "win32" }),
+    (err: Error & { code?: string }) => err.code === "SANDBOX_UNAVAILABLE",
+  );
+  const degraded = await planSandboxedCommand("echo hi", { workdir: ".", cfg: { mode: "process", onUnavailable: "degrade" }, platform: "win32" });
+  assert.equal(degraded.mode, "none");
+  assert.match(degraded.note ?? "", /degrade/);
 });
 
 test("planSandboxedCommand container: writes run script, builds docker command, cleanup removes it", async () => {
@@ -92,8 +94,8 @@ test("process tier: CPU-seconds cap and injectable platform (Codex-style native 
   const linux = await planSandboxedCommand("echo hi", { workdir: ".", cfg: { mode: "process", cpuSeconds: 300 }, platform: "linux" });
   assert.match(linux.command, /^ulimit -t 300/);
   assert.match(linux.command, /ulimit -v 524288/);
-  const win = await planSandboxedCommand("echo hi", { workdir: ".", cfg: { mode: "process" }, platform: "win32" });
+  const win = await planSandboxedCommand("echo hi", { workdir: ".", cfg: { mode: "process", onUnavailable: "degrade" }, platform: "win32" });
   assert.equal(win.mode, "none");
-  assert.match(win.note ?? "", /win32/);
+  assert.match(win.note ?? "", /degrade/);
   assert.throws(() => normalizeSandboxConfig({ mode: "none", cpuSeconds: 0 }), /cpuSeconds/);
 });

@@ -70,7 +70,8 @@ export AGENTOS_SANDBOX=container       # or "process" / "none" (default)
 - `container` — every command runs in an ephemeral Docker container: workspace mounted at `/workspace`, **no network**,
   dropped capabilities, memory/cpu/pids caps. Requires a reachable Docker daemon (`sandbox.onUnavailable: "degrade"`
   falls back to unsandboxed instead of failing).
-- `process` — POSIX `ulimit` vmem/pid caps layered onto the command (degrades on Windows).
+- `process` — POSIX `ulimit` vmem/pid/cpu caps layered onto the command. On Windows this **fails closed**
+  (`SANDBOX_UNAVAILABLE`) unless `sandbox.onUnavailable` is `"degrade"`.
 - `none` — policy-only (deny-list + workspace path guard), the historic default.
 
 The sandbox complements the command policy; it contains accidents, not adversaries (see SECURITY.md).
@@ -159,9 +160,10 @@ conversation compaction.
 
 ## Agentic capabilities (Claude Code parity set)
 
-- **Parallel tool calls**: a turn's independent tool calls execute with bounded concurrency (default 4);
-  `agentic.parallelToolCalls: false` (or `agentic.maxParallel`) tunes it. Results are re-ordered to model order so
-  provider pairing rules stay intact.
+- **Parallel tool calls**: consecutive read-only calls in a turn run together, bounded by `agentic.maxParallel`
+  (default 4). Writes, shells and any other mutating call run alone, so one turn cannot race two edits.
+  `agentic.parallelToolCalls: false` forces every call to run alone. Results stay in model order so provider
+  pairing rules stay intact.
 - **Subagents**: the `subagent` tool delegates self-contained work to an isolated child runtime (fresh context, no
   parent transcript, no recursive spawning) and returns a capped {status, summary} — the "context firewall" pattern.
   Optional per-subagent `instructions`. Disable with `subagent: false` in runtime options.

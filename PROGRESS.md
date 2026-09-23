@@ -175,3 +175,42 @@ All four leftovers from the CLI-gap report closed, each with tests:
   finished agentic turns into the chat session automatically.
 - Verified live: dashboard Chat entry, /chat page load, noModel 503 banner, approvals API (empty list /
   404 bogus id); build green; full-suite results in STATE.md.
+
+## Round 12 — safe parallel tool calls (Claude Code isConcurrencySafe)
+- Stress baseline (before the change): 40 tasks / concurrency 16 in 4.2s; 100 tool calls; 5000 events
+  through sqlite and file stores. All four stress tests green. The suite does not exercise one model
+  turn issuing several writes, so it could not see the race below.
+- Defect: `AgenticLoopAgent` ran every tool call of a turn concurrently up to `maxParallel`. A turn
+  that writes two files (or writes while a shell runs) overlapped those calls. Claude Code only
+  parallelises tools flagged `isConcurrencySafe`; Codex keeps mutations on one lane.
+- Change: `ToolActionDef.readOnly` on filesystem read/list/search/stat/exists, git status/diff/log/
+  rev_parse/state, http get, process list/output. `partitionToolCalls` makes each mutating call its
+  own wave; a run of read-only calls shares a wave capped by `maxParallel` (default 4, hard max 16).
+  `mapLimited` is the pool. Results stay in model order. `ToolRegistry.aroundExecute` lets tests
+  observe overlap without replacing tools.
+- Proof: integration test holds filesystem calls for 120ms and records peak overlap — writes peak at
+  1, reads peak at 2, step order is w1, w2, r1, r2. Agentic suite 13/13.
+- Stress after the change (`STRESS_TASKS=200`, concurrency 16): 200 tasks in 18.9s (10.6 tasks/s),
+  6000 events, heap +13.2MB, no leaked checkpoints or processes. 100 concurrent tool calls in 2.3s.
+  5000 events: sqlite 788 ev/s, file 934 ev/s, replay order preserved. 4/4 green.
+
+## Round 13 — gap closure against Claude Code / Codex / Aider
+Scoped to what this repo can actually ship. Not in scope: an IDE, voice/image input, a plugin
+marketplace, or a native Anthropic protocol.
+- **Search.** `globToRegExp` compiled `**` by string replace, then rewrote the `*` inside the
+  replacement, so `**/*.txt` matched nothing. It is now a single left-to-right scan. `**/` matches
+  zero directories. Search splits on CR as well as LF, so CRLF hit text no longer ends in `\r`.
+- **Repo map.** Java/Kotlin, C/C++ and Ruby patterns added. A source file with no recognised
+  declaration stays on the map as `(no declarations)`. `RepoMapOptions.extensions` is actually read;
+  unknown extensions fall back to the JS/TS patterns instead of disappearing.
+- **Compaction.** `compactConversation` now also triggers when the estimated token count (4 chars per
+  token, default 24k) is exceeded, and drops whole leading turns until the tail fits. The 100-message
+  path is unchanged.
+- **Subagent roles.** `subagent.run` accepts `role: explore | implement | review`. Each role adds
+  instructions and a default tool allowlist; an explicit `tools` argument still wins. `explore`
+  cannot write.
+- **Windows sandbox.** `mode=process` on win32 used to run the command unsandboxed and only set a
+  note. It now throws `SANDBOX_UNAVAILABLE` unless `onUnavailable: "degrade"` is set. README (en,
+  zh-CN, ja), SECURITY and ARCHITECTURE match the code.
+- Proof: tools + repomap + extensions + sandbox unit tests, agentic integration and the sandbox
+  integration file — 51 passed, 1 skipped (container tier, Docker daemon not reachable). `tsc --noEmit` clean.

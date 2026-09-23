@@ -243,6 +243,57 @@ test("agentic mode executes a turn's multiple tool calls in parallel", async () 
   }
 });
 
+test("mutating tool calls in one turn never overlap; read-only calls do", async () => {
+  const active = { writes: 0, maxWrites: 0, reads: 0, maxReads: 0 };
+  const provider = new MockModelProvider({
+    turns: [
+      {
+        content: "two writes then two reads",
+        tokens: 5,
+        toolCalls: [
+          toolCall("filesystem__write", { path: "w1.txt", content: "one" }, "w1"),
+          toolCall("filesystem__write", { path: "w2.txt", content: "two" }, "w2"),
+          toolCall("filesystem__read", { path: "w1.txt" }, "r1"),
+          toolCall("filesystem__read", { path: "w2.txt" }, "r2"),
+        ],
+      },
+      { content: "done", tokens: 2, toolCalls: [] },
+    ],
+  });
+  const { rt, dir, cleanup } = await makeRuntime({ model: provider });
+  rt.tools.aroundExecute = async (tool, action, run) => {
+    const slot = tool === "filesystem" && action === "write" ? "writes" : tool === "filesystem" && action === "read" ? "reads" : null;
+    const peak = slot === "writes" ? "maxWrites" : slot === "reads" ? "maxReads" : null;
+    if (slot && peak) {
+      active[slot]++;
+      active[peak] = Math.max(active[peak], active[slot]);
+    }
+    try {
+      if (slot) await new Promise((r) => setTimeout(r, 120));
+      return await run();
+    } finally {
+      if (slot) active[slot]--;
+    }
+  };
+  try {
+    const task = await rt.createTask({ title: "safe parallel", goal: "write two files then read them", mode: "agentic" });
+    await rt.startTask(task.id);
+    const done = await rt.waitForTask(task.id);
+    assert.equal(done.status, "COMPLETED", done.error);
+    assert.equal(await fsp.readFile(path.join(dir, "w1.txt"), "utf8"), "one");
+    assert.equal(await fsp.readFile(path.join(dir, "w2.txt"), "utf8"), "two");
+    assert.equal(active.maxWrites, 1, "writes in one turn must not overlap");
+    assert.ok(active.maxReads >= 2, `reads should overlap, peak was ${active.maxReads}`);
+    assert.deepEqual(
+      done.result?.stepResults.map((r) => r.stepId.replace(/^t\d+-/, "")),
+      ["w1", "w2", "r1", "r2"],
+      "model order preserved across waves",
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
 test("agentic mode delegates to isolated subagents via the subagent tool", async () => {
   const provider = new MockModelProvider({
     turns: [
@@ -338,6 +389,33 @@ test("subagent tool allowlist restricts the child's tool set (Claude Code subage
     const view = rt.tools.get("subagent");
     void view;
     assert.ok(toolSchemasFromRegistry(rt.tools).schemas.some((s) => s.name === "subagent__run"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("subagent role=explore refuses a write without an explicit tool override", async () => {
+  const { rt, dir, cleanup } = await makeRuntime({ model: null });
+  try {
+    const denied = await rt.tools.execute("subagent", { action: "run", args: { goal: "nope", role: "unknown" } }, { taskId: "t", agentId: "a", workdir: dir });
+    assert.equal(denied.error?.code, "INVALID_ARGUMENT");
+    const result = await rt.tools.execute(
+      "subagent",
+      {
+        action: "run",
+        args: {
+          goal: "inspect only",
+          role: "explore",
+          mode: "plan",
+          steps: [{ id: "s1", tool: "filesystem", action: "write", args: { path: "nope.txt", content: "x" } }],
+        },
+      },
+      { taskId: "t", agentId: "a", workdir: dir },
+    );
+    assert.equal(result.ok, true, result.error?.message);
+    const data = result.data as { status?: string };
+    assert.equal(data.status, "FAILED");
+    assert.equal(await fsp.access(path.join(dir, "nope.txt")).then(() => true, () => false), false);
   } finally {
     await cleanup();
   }

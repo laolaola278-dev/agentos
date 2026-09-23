@@ -101,3 +101,14 @@
     [x] Task 16.3 /chat conversational page (SSE live deltas/tools, transcript resume, task links) + /api/agentos/chat
     [x] Task 16.4 SSE stream persists finished agentic turns into the chat session
     [x] Task 16.5 Integration test for the bridge (approve/deny/timeout); live verification of pages + APIs
+[x] Phase 17 Safe parallel tool calls
+    [x] Task 17.1 ToolActionDef.readOnly on filesystem/git/http/process read actions
+    [x] Task 17.2 partitionToolCalls + mapLimited: mutating calls are a wave of one; read-only waves honour maxParallel
+    [x] Task 17.3 Integration test: two writes never overlap, two reads do, model order preserved
+    [x] Task 17.4 Stress re-run: 200 tasks at concurrency 16, 100 concurrent tool calls, 5000 events x2 stores
+[x] Phase 18 Gap closure (search, repo-map, token compaction, subagent roles, Windows sandbox)
+    [x] Task 18.1 globToRegExp single-pass; `**` matches nested paths; CR stripped from search hits
+    [x] Task 18.2 repo-map: Java/Kotlin/C/C++/Ruby, declaration-less files kept, extensions option works
+    [x] Task 18.3 compactConversation drops leading turns once the estimated token budget is exceeded
+    [x] Task 18.4 subagent roles explore/implement/review with default tool allowlists
+    [x] Task 18.5 process sandbox fails closed on win32 unless onUnavailable=degrade; docs synced

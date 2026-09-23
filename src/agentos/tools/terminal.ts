@@ -533,10 +533,10 @@ export class ProcessTool implements Tool {
   name = "process";
   description = "Inspect and control background processes started by this runtime (never arbitrary PIDs)";
   actions: ToolActionDef[] = [
-    { name: "list", description: "List managed processes", params: { taskId: "string?" } },
+    { name: "list", description: "List managed processes", params: { taskId: "string?" }, readOnly: true },
     { name: "kill", description: "Kill a managed process", params: { id: "string" } },
     { name: "wait", description: "Wait for a managed process to exit", params: { id: "string", timeoutMs: "number?" } },
-    { name: "output", description: "Get process output", params: { id: "string" } },
+    { name: "output", description: "Get process output", params: { id: "string" }, readOnly: true },
   ];
 
   constructor(private processes: ProcessManager) {}

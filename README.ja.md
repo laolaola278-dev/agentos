@@ -71,7 +71,8 @@ export AGENTOS_SANDBOX=container       # または "process" / "none"（デフ�
 - `container` — すべてのコマンドが使い捨ての Docker コンテナ内で実行：ワークスペースは `/workspace` に
   マウント、**ネットワークなし**、capabilities をドロップ、メモリ/CPU/pids 制限。到達可能な Docker デーモンが
   必要（`sandbox.onUnavailable: "degrade"` でサンドボックス不可時に失敗ではなく非サンドボックスへフォールバック）。
-- `process` — POSIX `ulimit` の vmem/pid 制限をコマンドに重ねる（Windows では縮退）。
+- `process` — POSIX `ulimit` のメモリ/プロセス/CPU 秒制限。Windows では **失敗終了**（`SANDBOX_UNAVAILABLE`）。
+  サンドボックス無しで走らせるのは `sandbox.onUnavailable: "degrade"` を明示したときだけ。
 - `none` — ポリシーのみ（拒否リスト + ワークスペースパスガード）、従来のデフォルト。
 
 サンドボックスはコマンドポリシーを補完するものです。事故を封じ込めるものであり、敵対者を封じ込めるものでは
@@ -143,9 +144,9 @@ agentos eval compare .agentos/evals/baseline-*.json .agentos/evals/variant-a-*.j
 
 ## Agentic 機能（Claude Code 相当セット）
 
-- **並列ツール呼び出し**：ターン内の独立したツール呼び出しは有界の同時実行（デフォルト 4）で実行；
-  `agentic.parallelToolCalls: false`（または `agentic.maxParallel`）で調整。結果はモデルの順序に並べ替えられ、
-  プロバイダのペアリング規則が維持されます。
+- **並列ツール呼び出し**：ターン内で連続する読み取り専用呼び出しだけを `agentic.maxParallel`（既定 4）で並列実行。
+  書き込み・シェルなど状態を変える呼び出しは単独で実行し、同じターンの編集が重ならない。`agentic.parallelToolCalls: false`
+  ですべて直列。結果はモデルの順序を保つ。
 - **サブエージェント**：`subagent` ツールは自己完結した作業を分離された子ランタイムに委譲（新しいコンテキスト、
   親のトランスクリプトなし、再帰的なスポーンなし）し、上限付きの {status, summary} を返します —
   「コンテキストファイアウォール」パターン。サブエージェントごとの `instructions` は任意。ランタイムオプションで

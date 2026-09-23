@@ -25,3 +25,10 @@ runtime polls it. Simple, durable, no daemon socket required.
 ## D6 — Terminal commands run in their own process group
 So timeouts/cancellation kill the whole tree (SIGTERM → SIGKILL) and a runaway child can never hang
 the runtime.
+
+## D7 — Only read-only tool calls run in parallel
+A model turn used to run every tool call concurrently up to `maxParallel`. Two writes (or a write
+and a shell) in one turn could then race on the same workdir. Claude Code only overlaps calls whose
+tool declares `isConcurrencySafe`; Codex likewise keeps mutations on one lane. `ToolActionDef.readOnly`
+is that flag. `partitionToolCalls` groups a consecutive run of read-only calls into one bounded wave
+and gives every other call a wave of its own. Results are still appended in model order.

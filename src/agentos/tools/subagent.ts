@@ -30,6 +30,21 @@ export interface SubagentToolOptions {
   maxConcurrent?: number;
 }
 
+const SUBAGENT_ROLES: Record<string, { instructions: string; tools: string[] }> = {
+  explore: {
+    instructions: "You are a read-only explorer. Find the relevant files and symbols and report paths, line-level facts and open questions. Do not modify files or run mutating commands.",
+    tools: ["filesystem.read", "filesystem.list", "filesystem.search", "filesystem.stat", "filesystem.exists", "git.status", "git.diff", "git.log"],
+  },
+  implement: {
+    instructions: "You are an implementer. Make the smallest change that satisfies the goal, then say which files changed. Do not widen the task.",
+    tools: ["filesystem.*", "terminal.execute"],
+  },
+  review: {
+    instructions: "You are a reviewer. Look for correctness, missing tests and security issues. Report findings only; do not edit files.",
+    tools: ["filesystem.read", "filesystem.list", "filesystem.search", "git.diff", "git.log"],
+  },
+};
+
 export class SubagentTool implements Tool {
   name = "subagent";
   description = "Delegate a self-contained sub-task to an isolated sub-agent with a fresh context; returns its status and a short summary only";
@@ -37,7 +52,7 @@ export class SubagentTool implements Tool {
     {
       name: "run",
       description: "Run an isolated sub-agent on a goal. In plan mode provide explicit steps; in agentic mode an LLM drives the child run.",
-      params: { goal: "string", mode: "plan|agentic?", instructions: "string?", tools: "string[]?", steps: "any?", acceptance: "any?", maxToolCalls: "number?" },
+      params: { goal: "string", mode: "plan|agentic?", role: "explore|implement|review?", instructions: "string?", tools: "string[]?", steps: "any?", acceptance: "any?", maxToolCalls: "number?" },
     },
   ];
   private running = 0;
@@ -54,7 +69,10 @@ export class SubagentTool implements Tool {
     if (mode === "agentic" && !this.opts.model) throw new ToolError("MODEL_REQUIRED", "agentic subagents require an LLM provider");
     if (mode === "plan" && !Array.isArray(a.steps)) throw new ToolError("INVALID_ARGUMENT", "plan-mode subagent.run requires a steps array");
     // specialized sub-agent instructions (Claude Code custom-subagent equivalent)
-    const instructions = typeof a.instructions === "string" ? a.instructions.trim().slice(0, 4000) : "";
+    const roleName = typeof a.role === "string" ? a.role.trim() : "";
+    if (roleName && !SUBAGENT_ROLES[roleName]) throw new ToolError("INVALID_ARGUMENT", `unknown subagent role "${roleName}" (expected explore, implement or review)`);
+    const role = roleName ? SUBAGENT_ROLES[roleName] : undefined;
+    const instructions = [role?.instructions, typeof a.instructions === "string" ? a.instructions.trim() : ""].filter(Boolean).join("\n\n").slice(0, 4000);
 
     const spec: TaskSpec = {
       title: goal.slice(0, 80),
@@ -70,7 +88,8 @@ export class SubagentTool implements Tool {
     const childDataDir = path.join(this.opts.dataDir, "subagents", `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
     // tool allowlist (Claude Code subagent `tools:` semantics): the child only
     // sees the allow-listed tools/actions; everything else is invisible
-    const toolAllowlist = Array.isArray(a.tools) ? (a.tools as string[]).filter((p) => typeof p === "string") : [];
+    const requestedTools = Array.isArray(a.tools) ? (a.tools as string[]).filter((p) => typeof p === "string") : [];
+    const toolAllowlist = requestedTools.length ? requestedTools : role?.tools ?? [];
     const child = await AgentRuntime.create({
       rootDir: this.opts.rootDir,
       dataDir: childDataDir,

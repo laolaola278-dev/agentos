@@ -9,7 +9,7 @@ export class HttpTool implements Tool {
   name = "http";
   description = "HTTP client (http/https only, blocked metadata hosts, size-limited responses, headers redacted in logs)";
   actions: ToolActionDef[] = [
-    { name: "get", description: "GET request", params: { url: "string", headers: "object?", timeoutMs: "number?", maxBytes: "number?" } },
+    { name: "get", description: "GET request", params: { url: "string", headers: "object?", timeoutMs: "number?", maxBytes: "number?" }, readOnly: true },
     { name: "post", description: "POST request with JSON or text body", params: { url: "string", body: "any?", headers: "object?", timeoutMs: "number?", maxRequestBytes: "number?" } },
     { name: "request", description: "Arbitrary method", params: { url: "string", method: "string", body: "any?", headers: "object?", timeoutMs: "number?", maxRequestBytes: "number?" } },
   ];

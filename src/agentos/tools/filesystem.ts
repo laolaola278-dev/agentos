@@ -40,7 +40,7 @@ export class FilesystemTool implements Tool {
   name = "filesystem";
   description = "Sandboxed filesystem access limited to the task workdir";
   actions: ToolActionDef[] = [
-    { name: "read", description: "Read a text file (optionally a line range)", params: { path: "string", maxBytes: "number?", encoding: "utf8|base64?", startLine: "number?", endLine: "number?" } },
+    { name: "read", description: "Read a text file (optionally a line range)", params: { path: "string", maxBytes: "number?", encoding: "utf8|base64?", startLine: "number?", endLine: "number?" }, readOnly: true },
     { name: "write", description: "Write a file atomically (creates parents)", params: { path: "string", content: "string" } },
     { name: "append", description: "Append to a file atomically", params: { path: "string", content: "string" } },
     { name: "edit", description: "Replace text in a file", params: { path: "string", oldText: "string", newText: "string", all: "boolean?" } },
@@ -49,11 +49,11 @@ export class FilesystemTool implements Tool {
     { name: "delete", description: "Delete a file or directory", params: { path: "string", recursive: "boolean?" } },
     { name: "move", description: "Move/rename", params: { from: "string", to: "string" } },
     { name: "copy", description: "Copy file or directory", params: { from: "string", to: "string" } },
-    { name: "list", description: "List directory entries", params: { path: "string?", recursive: "boolean?", maxEntries: "number?" } },
-    { name: "search", description: "Regex search across files", params: { pattern: "string", path: "string?", glob: "string?", maxResults: "number?" } },
+    { name: "list", description: "List directory entries", params: { path: "string?", recursive: "boolean?", maxEntries: "number?" }, readOnly: true },
+    { name: "search", description: "Regex search across files", params: { pattern: "string", path: "string?", glob: "string?", maxResults: "number?" }, readOnly: true },
     { name: "mkdir", description: "Create directory", params: { path: "string" } },
-    { name: "stat", description: "File metadata", params: { path: "string" } },
-    { name: "exists", description: "Check existence", params: { path: "string" } },
+    { name: "stat", description: "File metadata", params: { path: "string" }, readOnly: true },
+    { name: "exists", description: "Check existence", params: { path: "string" }, readOnly: true },
   ];
 
   async execute(input: ToolInput, ctx: ToolContext): Promise<unknown> {
@@ -336,7 +336,7 @@ export class FilesystemTool implements Tool {
           }
           if (buf.length > 4 * 1024 * 1024 || isBinary(buf)) continue;
           filesScanned++;
-          const lines = buf.toString("utf8").split("\n");
+          const lines = buf.toString("utf8").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
           for (let i = 0; i < lines.length; i++) {
             re.lastIndex = 0;
             if (re.test(lines[i])) {
@@ -437,12 +437,25 @@ function applyHunks(source: string[], hunks: ParsedHunk[]): { lines: string[]; a
 }
 
 export function globToRegExp(glob: string): RegExp {
-  glob = glob.replace(/\\/g, "/");
-  const escaped = glob
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*\//g, "(?:.*/)?")
-    .replace(/\*\*/g, ".*")
-    .replace(/\*/g, "[^/]*")
-    .replace(/\?/g, "[^/]");
-  return new RegExp(`^${escaped}$`);
+  const source = glob.replace(/\\/g, "/");
+  let out = "";
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i];
+    if (c === "*") {
+      const recursive = source[i + 1] === "*";
+      if (recursive) i++;
+      const slashAfter = recursive && source[i + 1] === "/";
+      if (slashAfter) i++;
+      // `**/` also matches zero directories, so `**/*.txt` matches `a.txt`.
+      out += recursive ? (slashAfter ? "(?:.*/)?" : ".*") : "[^/]*";
+      continue;
+    }
+    if (c === "?") {
+      out += "[^/]";
+      continue;
+    }
+    if ("+.^${}()|[]\\".includes(c)) out += "\\";
+    out += c;
+  }
+  return new RegExp(`^${out}$`);
 }

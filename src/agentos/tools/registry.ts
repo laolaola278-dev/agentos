@@ -121,6 +121,8 @@ export class ToolRegistry {
   private hooks: HookRunner | null = null;
   private permissionGate: PermissionGate | null = null;
   private permissionPolicy: PermissionPolicy = { allow: [], deny: [], ask: [], sessionAllow: [] };
+  /** Optional observer around every execution (tests measuring overlap). */
+  aroundExecute: ((tool: string, action: string, run: () => Promise<unknown>) => Promise<unknown>) | null = null;
 
   register(tool: Tool): this {
     if (this.tools.has(tool.name)) throw new Error(`tool already registered: ${tool.name}`);
@@ -283,7 +285,8 @@ export class ToolRegistry {
         if (signal.aborted) reject(signal.reason);
         else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
       });
-      const raw = await Promise.race([tool.execute(input, ctx), raceAbort]);
+      const invoke = () => Promise.race([tool.execute(input, ctx), raceAbort]);
+      const raw = await (this.aroundExecute ? this.aroundExecute(toolName, input.action, invoke) : invoke());
       const { value, truncated } = truncatePayload(raw, maxOutputBytes);
       const output = finish({ ok: true, data: value, truncated: truncated || undefined });
       await bus?.emit({ ...base, type: "tool.completed", args: input, result: value, durationMs: output.durationMs, data: logs.length ? { logs } : undefined });

@@ -111,6 +111,15 @@ export class NotesStore {
   }
 }
 
+/** Rough token count: ~4 source characters per token, the same ratio the mock provider uses. */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+export function estimateConversationTokens(messages: { content: string }[]): number {
+  return messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
+}
+
 export interface ContextBudgetReport {
   messages: number;
   totalChars: number;

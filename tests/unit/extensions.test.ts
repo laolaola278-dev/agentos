@@ -134,6 +134,15 @@ test("compactConversation leaves short conversations alone", async () => {
   assert.equal(out.length, 2);
 });
 
+test("compactConversation compacts a short but oversized conversation by token estimate", async () => {
+  const messages = [msg("system", "s"), msg("user", "x".repeat(8_000)), msg("assistant", "y".repeat(8_000)), msg("user", "keep-me")];
+  const { messages: out, compacted } = await compactConversation(messages, null, undefined, { maxTokens: 1000 });
+  assert.equal(compacted, true);
+  assert.match(out[1].content, /\[context compacted\]/);
+  assert.match(out[out.length - 1].content, /keep-me/);
+  assert.ok(out.length < messages.length);
+});
+
 // ---- project instructions -------------------------------------------------
 
 test("readProjectInstructions picks up AGENTS.md from the workspace", async () => {

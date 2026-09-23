@@ -28,7 +28,7 @@ import type { VerificationEngine } from "./verification";
 import { extractJson, repairToolArguments } from "./model";
 import { redactString } from "./security";
 import { getGitState, runGit } from "./tools/git";
-import { cleanToolResult, NotesStore } from "./context";
+import { cleanToolResult, NotesStore, estimateConversationTokens } from "./context";
 import { skillsPromptSection, type Skill } from "./skills";
 import { buildRepoMap } from "./repomap";
 
@@ -395,10 +395,55 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 // still only complete with objective evidence.
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether one model tool-call may overlap another in the same turn.
+ * Unknown or mutating actions are never concurrent (Claude Code isConcurrencySafe).
+ */
+export function isConcurrencySafeCall(name: string, resolve: (name: string) => { tool: string; action: string; readOnly: boolean } | null): boolean {
+  return resolve(name)?.readOnly === true;
+}
+
+/**
+ * Splits a turn into waves. A wave is either one mutating call, or a run of
+ * consecutive read-only calls. Order inside a wave is the model's order, so
+ * tool_call / tool_result pairing stays intact while writes never overlap.
+ */
+export function partitionToolCalls<T extends { name: string }>(calls: T[], resolve: (name: string) => { readOnly: boolean } | null): T[][] {
+  const waves: T[][] = [];
+  let current: T[] | null = null;
+  for (const call of calls) {
+    const readOnly = resolve(call.name)?.readOnly === true;
+    if (readOnly && current) {
+      current.push(call);
+      continue;
+    }
+    current = readOnly ? [call] : null;
+    waves.push(current ?? [call]);
+  }
+  return waves;
+}
+
+/** Bounded worker pool. `limit` 1 runs the items one after another. */
+export async function mapLimited<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const width = Math.max(1, Math.min(limit, items.length || 1));
+  const out: R[] = new Array(items.length);
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(width, items.length) }, async () => {
+      for (;;) {
+        const index = cursor++;
+        if (index >= items.length) return;
+        out[index] = await fn(items[index], index);
+      }
+    }),
+  );
+  return out;
+}
+
 /** Builds OpenAI function-calling schemas from the registry: one tool per `tool.action`. */
-export function toolSchemasFromRegistry(registry: ToolRegistry): { schemas: ToolSchema[]; resolve: (name: string) => { tool: string; action: string } | null } {
+export function toolSchemasFromRegistry(registry: ToolRegistry): { schemas: ToolSchema[]; resolve: (name: string) => { tool: string; action: string; readOnly: boolean } | null } {
   const schemas: ToolSchema[] = [];
-  const index = new Map<string, { tool: string; action: string }>();
+  const index = new Map<string, { tool: string; action: string; readOnly: boolean }>();
   // Claude Code semantics: a bare-tool deny removes the tool from the model's
   // tool list entirely (not just blocks execution); action-level denies hide
   // that action's schema so the model never wastes a call on it.
@@ -427,7 +472,7 @@ export function toolSchemasFromRegistry(registry: ToolRegistry): { schemas: Tool
         if (!optional) required.push(param);
       }
       schemas.push({ name, description: `${t.name} tool, action "${a.name}": ${a.description}`, parameters: { type: "object", properties, required } });
-      index.set(name, { tool: t.name, action: a.name });
+      index.set(name, { tool: t.name, action: a.name, readOnly: a.readOnly === true });
     }
   }
   return { schemas, resolve: (name) => index.get(name) ?? null };
@@ -476,6 +521,8 @@ Rules:
 
 const MAX_COMPACTION_MESSAGES = 100;
 const KEEP_AFTER_COMPACTION = 30;
+/** Compact earlier once the estimated prompt passes this, even with few messages. */
+const MAX_COMPACTION_TOKENS = 24_000;
 
 /** Reads project-level instructions hierarchically (Claude Code / Codex convention):
  *  starting at the workdir and walking UP to the filesystem root, collecting
@@ -514,26 +561,43 @@ export async function readProjectInstructions(workdir: string, cap = 8000): Prom
   return parts.join("\n\n");
 }
 
-export async function compactConversation(messages: Message[], model?: { complete: ModelProvider["complete"] } | null, signal?: AbortSignal): Promise<{ messages: Message[]; compacted: boolean; summary?: string }> {
-  if (messages.length <= MAX_COMPACTION_MESSAGES) return { messages, compacted: false };
+export async function compactConversation(messages: Message[], model?: { complete: ModelProvider["complete"] } | null, signal?: AbortSignal, opts: { maxMessages?: number; maxTokens?: number } = {}): Promise<{ messages: Message[]; compacted: boolean; summary?: string }> {
+  const maxMessages = opts.maxMessages ?? MAX_COMPACTION_MESSAGES;
+  const maxTokens = opts.maxTokens ?? MAX_COMPACTION_TOKENS;
+  const overTokens = estimateConversationTokens(messages) > maxTokens;
+  if (messages.length <= maxMessages && !overTokens) return { messages, compacted: false };
   const system = messages.filter((m) => m.role === "system");
   const rest = messages.filter((m) => m.role !== "system");
-  const dropCount = rest.length - KEEP_AFTER_COMPACTION;
-  // drop whole (assistant tool_calls + following tool results) units from the front
   let start = 0;
-  let dropped = 0;
-  while (dropped < dropCount && start < rest.length) {
-    const m = rest[start];
-    start++;
-    dropped++;
-    if (m.role === "assistant" && m.toolCalls?.length) {
-      const ids = new Set(m.toolCalls.map((c) => c.id));
-      while (start < rest.length && rest[start].role === "tool" && ids.has(rest[start].toolCallId ?? "")) {
-        start++;
-        dropped++;
+  if (overTokens) {
+    // Drop whole turns from the front until the kept tail fits the token budget.
+    // Always retain the newest message so the model still sees the latest state.
+    const tailTokens = () => estimateConversationTokens([...system, ...rest.slice(start)]);
+    while (start < rest.length - 1 && tailTokens() > maxTokens) {
+      const m = rest[start];
+      start++;
+      if (m.role === "assistant" && m.toolCalls?.length) {
+        const ids = new Set(m.toolCalls.map((c) => c.id));
+        while (start < rest.length - 1 && rest[start].role === "tool" && ids.has(rest[start].toolCallId ?? "")) start++;
+      }
+    }
+  } else {
+    const dropCount = Math.max(0, rest.length - KEEP_AFTER_COMPACTION);
+    let droppedUnits = 0;
+    while (droppedUnits < dropCount && start < rest.length) {
+      const m = rest[start];
+      start++;
+      droppedUnits++;
+      if (m.role === "assistant" && m.toolCalls?.length) {
+        const ids = new Set(m.toolCalls.map((c) => c.id));
+        while (start < rest.length && rest[start].role === "tool" && ids.has(rest[start].toolCallId ?? "")) {
+          start++;
+          droppedUnits++;
+        }
       }
     }
   }
+  const dropped = start;
   const droppedMessages = rest.slice(0, start).filter((m) => !(m.role === "tool"));
   const source = droppedMessages.map((m) => `${m.role}${m.agent ? `(${m.agent})` : ""}: ${m.content.slice(0, 500)}`).join("\n").slice(0, 12_000);
   let summary = `[context compacted] ${dropped} earlier message(s) omitted.`;
@@ -650,13 +714,11 @@ export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
         break;
       }
       conversation.push({ role: "assistant", content: completion.content, toolCalls: completion.toolCalls, ts: nowIso() });
-      // Parallel execution of the turn's independent tool calls (Claude Code /
-      // OpenAI parallel-function-calling style), bounded so a chatty turn cannot
-      // spawn a process storm. Results are placed back in MODEL order so the
-      // assistant tool_calls / tool result pairing stays intact for the provider.
+      // Claude Code only overlaps read-only calls. A mutating call (write, shell,
+      // git, subagent, …) is its own wave and runs alone, so two writes in one
+      // turn cannot race. Read-only waves stay bounded so a chatty turn cannot
+      // spawn a process storm. Results go back in MODEL order.
       const limit = ctx.agentic?.parallelToolCalls === false ? 1 : Math.max(1, Math.min(ctx.agentic?.maxParallel ?? 4, 16));
-      const ordered: { call: (typeof completion.toolCalls)[number]; result: StepResult }[] = new Array(completion.toolCalls.length);
-      const workQueue = completion.toolCalls.map((call, index) => ({ call, index }));
       const executeCall = async (call: (typeof completion.toolCalls)[number]): Promise<StepResult> => {
         if (ctx.signal.aborted) throw ctx.signal.reason;
         const started = Date.now();
@@ -698,15 +760,12 @@ export class AgenticLoopAgent implements Agent<AgenticInput, AgenticOutput> {
           finishedAt: nowIso(),
         };
       };
-      await Promise.all(
-        Array.from({ length: Math.min(limit, workQueue.length) }, async () => {
-          for (;;) {
-            const next = workQueue.shift();
-            if (!next) return;
-            ordered[next.index] = { call: next.call, result: await executeCall(next.call) };
-          }
-        }),
-      );
+      const ordered: { call: (typeof completion.toolCalls)[number]; result: StepResult }[] = [];
+      for (const wave of partitionToolCalls(completion.toolCalls, resolve)) {
+        const waveLimit = wave.length > 1 ? limit : 1;
+        const waveResults = await mapLimited(wave, waveLimit, (call) => executeCall(call));
+        wave.forEach((call, i) => ordered.push({ call, result: waveResults[i] }));
+      }
       for (const { call, result } of ordered) {
         results.push(result);
         if (result.ok) toolCalls++;

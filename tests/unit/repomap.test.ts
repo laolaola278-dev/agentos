@@ -33,6 +33,21 @@ test("repo-map extracts symbols per language and skips dependency dirs", async (
   }
 });
 
+test("repo-map keeps files without declarations and honours extra extensions", async () => {
+  const dir = await tmpDir("agentos-repomap3-");
+  try {
+    await fsp.writeFile(path.join(dir, "config.ts"), "const value = 1;\n");
+    await fsp.writeFile(path.join(dir, "Widget.java"), "public class Widget {}\n");
+    await fsp.writeFile(path.join(dir, "notes.xyz"), "export function fromXyz() {}\n");
+    const { map } = await buildRepoMap(dir, { extensions: [".xyz"], maxChars: 4000 });
+    assert.match(map, /config\.ts: \(no declarations\)/);
+    assert.match(map, /Widget\.java: Widget/);
+    assert.match(map, /notes\.xyz: fromXyz/);
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("repo-map respects the character budget and flags truncation", async () => {
   const dir = await tmpDir("agentos-repomap2-");
   try {

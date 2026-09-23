@@ -15,6 +15,11 @@ test("provider profiles: github-models points at the hosted gateway with GITHUB_
   assert.equal(PROVIDER_PROFILES.glm.baseUrl, "https://open.bigmodel.cn/api/paas/v4");
   assert.equal(PROVIDER_PROFILES.ollama.baseUrl, "http://127.0.0.1:11434/v1");
   assert.equal(PROVIDER_PROFILES.ollama.apiKeyEnv.length, 0, "local ollama needs no key");
+  assert.equal(PROVIDER_PROFILES.xplabs.baseUrl, "https://api.experientiallabs.ai/v1");
+  assert.deepEqual(PROVIDER_PROFILES.xplabs.apiKeyEnv, ["XPLABS_API_KEY", "LLM_API_KEY"]);
+  assert.equal(PROVIDER_PROFILES.xplabs.defaultSecretName, "XPLABS_API_KEY");
+  assert.equal(PROVIDER_PROFILES.xplabs.jsonMode, true);
+  assert.equal(PROVIDER_PROFILES.xplabs.toolStreaming, false);
 });
 
 test("resolveProviderSettings: env key on the default openai profile", async () => {
@@ -89,6 +94,16 @@ test("config llm section validation", () => {
   assert.throws(() => validateAgentOsConfig({ llm: { toolStreaming: "yes" } }), /llm.toolStreaming/);
   assert.throws(() => validateAgentOsConfig({ llm: { maxTokens: 1 } }), /llm.maxTokens/);
   assert.throws(() => validateAgentOsConfig({ sandbox: { mode: "jail" } }), /none\|process\|container/);
+});
+
+test("config llm section accepts the named xplabs profile", () => {
+  const ok = validateAgentOsConfig({
+    llm: { provider: "xplabs", baseUrl: "https://api.experientiallabs.ai/v1", model: "glm-5.3-flash", apiKeySecret: "XPLABS_API_KEY", jsonMode: true },
+  });
+  assert.equal(ok.llm?.provider, "xplabs");
+  assert.equal(ok.llm?.model, "glm-5.3-flash");
+  assert.equal(ok.llm?.jsonMode, true);
+  assert.equal(ok.llm?.maxTokensField, undefined, "known gap: the validator drops maxTokensField; the profile default carries it");
 });
 
 test("repairToolArguments fixes the malformed shapes models actually emit", () => {
